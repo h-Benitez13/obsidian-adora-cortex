@@ -6,11 +6,13 @@ import {
   renderCustomerNote,
   sanitizeFileName,
 } from "./renderer";
+import { generateCustomer360, generateTeamProfile } from "./profiles";
 import {
   GranolaAdoraSettings,
   GranolaDocument,
   GranolaDocumentList,
   SyncResult,
+  WorkspaceMember,
 } from "./types";
 
 export class SyncEngine {
@@ -100,10 +102,134 @@ export class SyncEngine {
       }
     }
 
+    try {
+      await this.syncCustomer360Pages(allDocs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      result.errors.push(`Customer 360 sync failed: ${message}`);
+    }
+
+    try {
+      const members = await this.api.fetchWorkspaceMembers();
+      await this.syncTeamProfiles(members);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      result.errors.push(`Team profiles sync failed: ${message}`);
+    }
+
     settings.lastSyncTimestamp = new Date().toISOString();
     await this.saveSettings();
 
     return result;
+  }
+
+  private async syncCustomer360Pages(
+    allDocs: GranolaDocument[],
+  ): Promise<void> {
+    const settings = this.getSettings();
+    const basePath = settings.baseFolderPath;
+    const meetingsFolderPath = `${basePath}/${settings.meetingsFolderName}`;
+    const customersFolderPath = `${basePath}/${settings.customersFolderName}`;
+
+    const customerSet = new Set<string>();
+    for (const doc of allDocs) {
+      const tags = this.tagger.extract(doc);
+      for (const customer of tags.customers) {
+        customerSet.add(customer);
+      }
+    }
+
+    for (const customer of customerSet) {
+      const fileName = sanitizeFileName(customer);
+      const filePath = normalizePath(`${customersFolderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const markerIndex = existingContent.indexOf("<!-- user-content -->");
+        if (markerIndex !== -1) {
+          const userContent = existingContent.substring(markerIndex);
+          const generated = generateCustomer360(
+            customer,
+            meetingsFolderPath,
+            basePath,
+          );
+          const generatedMarkerIndex = generated.indexOf(
+            "<!-- user-content -->",
+          );
+          const generatedAbove =
+            generatedMarkerIndex !== -1
+              ? generated.substring(0, generatedMarkerIndex)
+              : generated;
+          await this.app.vault.modify(
+            existingFile,
+            generatedAbove + userContent,
+          );
+        } else {
+          const content = generateCustomer360(
+            customer,
+            meetingsFolderPath,
+            basePath,
+          );
+          await this.app.vault.modify(existingFile, content);
+        }
+      } else {
+        const content = generateCustomer360(
+          customer,
+          meetingsFolderPath,
+          basePath,
+        );
+        await this.app.vault.create(filePath, content);
+      }
+    }
+  }
+
+  private async syncTeamProfiles(members: WorkspaceMember[]): Promise<void> {
+    const settings = this.getSettings();
+    const basePath = settings.baseFolderPath;
+    const meetingsFolderPath = `${basePath}/${settings.meetingsFolderName}`;
+    const peopleFolderPath = `${basePath}/${settings.peopleFolderName}`;
+
+    const internalMembers = members.filter((m) =>
+      m.email.endsWith("@adora-ai.com"),
+    );
+
+    for (const member of internalMembers) {
+      const fileName = sanitizeFileName(member.name);
+      const filePath = normalizePath(`${peopleFolderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const markerIndex = existingContent.indexOf("<!-- user-content -->");
+        if (markerIndex !== -1) {
+          const userContent = existingContent.substring(markerIndex);
+          const generated = generateTeamProfile(
+            member,
+            basePath,
+            meetingsFolderPath,
+          );
+          const generatedMarkerIndex = generated.indexOf(
+            "<!-- user-content -->",
+          );
+          const generatedAbove =
+            generatedMarkerIndex !== -1
+              ? generated.substring(0, generatedMarkerIndex)
+              : generated;
+          await this.app.vault.modify(
+            existingFile,
+            generatedAbove + userContent,
+          );
+        }
+      } else {
+        const content = generateTeamProfile(
+          member,
+          basePath,
+          meetingsFolderPath,
+        );
+        await this.app.vault.create(filePath, content);
+      }
+    }
   }
 
   private async gatherAllDocuments(
@@ -165,6 +291,7 @@ export class SyncEngine {
       `${settings.baseFolderPath}/${settings.meetingsFolderName}`,
       `${settings.baseFolderPath}/${settings.ideasFolderName}`,
       `${settings.baseFolderPath}/${settings.customersFolderName}`,
+      `${settings.baseFolderPath}/${settings.peopleFolderName}`,
       `${settings.baseFolderPath}/${settings.prioritiesFolderName}`,
     ];
 

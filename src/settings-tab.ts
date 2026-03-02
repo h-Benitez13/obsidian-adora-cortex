@@ -147,6 +147,15 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         }),
     );
 
+    new Setting(containerEl).setName("People folder").addText((text) =>
+      text
+        .setValue(this.plugin.settings.peopleFolderName)
+        .onChange(async (value) => {
+          this.plugin.settings.peopleFolderName = value.trim() || "People";
+          await this.plugin.savePluginSettings();
+        }),
+    );
+
     containerEl.createEl("h3", { text: "Auto-tagging" });
 
     new Setting(containerEl)

@@ -6,11 +6,14 @@ import {
   GranolaDocumentList,
   GranolaDocumentListsResponse,
   GranolaTranscriptEntry,
+  WorkspaceMember,
+  WorkspaceMembersResponse,
 } from "./types";
 
 const API_BASE = "https://api.granola.ai";
 const CLIENT_VERSION = "5.354.0";
 const PAGE_SIZE = 100;
+const WORKSPACE_ID = "eb6da842-8cde-4b51-9c66-46313a1585d7";
 
 export class GranolaApiClient {
   private token: string | null = null;
@@ -70,6 +73,15 @@ export class GranolaApiClient {
       {},
     );
     return response.lists;
+  }
+
+  async fetchWorkspaceMembers(): Promise<WorkspaceMember[]> {
+    this.requireAuth();
+    const response = await this.postRequest<WorkspaceMembersResponse>(
+      "/v1/get-workspace-members",
+      { workspace_id: WORKSPACE_ID },
+    );
+    return response.members;
   }
 
   async fetchTranscript(documentId: string): Promise<GranolaTranscriptEntry[]> {

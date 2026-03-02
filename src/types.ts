@@ -98,6 +98,21 @@ export interface GranolaDocumentListsResponse {
   lists: GranolaDocumentList[];
 }
 
+// ── Workspace members ──
+
+export interface WorkspaceMember {
+  user_id: string;
+  email: string;
+  name: string;
+  role: string;
+  note_count: number;
+}
+
+export interface WorkspaceMembersResponse {
+  members: WorkspaceMember[];
+  invites: unknown[];
+}
+
 // ── Plugin settings ──
 
 export interface GranolaAdoraSettings {
@@ -107,6 +122,7 @@ export interface GranolaAdoraSettings {
   meetingsFolderName: string;
   ideasFolderName: string;
   customersFolderName: string;
+  peopleFolderName: string;
   prioritiesFolderName: string;
   includeTranscript: boolean;
   autoTagEnabled: boolean;
@@ -127,6 +143,7 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   meetingsFolderName: "Meetings",
   ideasFolderName: "Ideas",
   customersFolderName: "Customers",
+  peopleFolderName: "People",
   prioritiesFolderName: "Priorities",
   includeTranscript: false,
   autoTagEnabled: true,
