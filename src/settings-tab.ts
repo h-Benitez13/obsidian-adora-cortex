@@ -1,7 +1,9 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type GranolaAdoraPlugin from "./main";
 import { FigmaClient } from "./figma";
+import { GitHubClient } from "./github";
 import { LinearClient } from "./linear";
+import { SlackClient } from "./slack";
 import { Linker, formatLinkResult } from "./linker";
 
 export class GranolaAdoraSettingTab extends PluginSettingTab {
@@ -267,6 +269,169 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         }),
     );
 
+    containerEl.createEl("h3", { text: "Slack" });
+
+    new Setting(containerEl)
+      .setName("Sync from Slack")
+      .setDesc("Import messages and threads from Slack channels.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.syncSlack)
+          .onChange(async (value) => {
+            this.plugin.settings.syncSlack = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Slack bot token")
+      .setDesc("Bot user OAuth token from your Slack app.")
+      .addText((text) =>
+        text
+          .setPlaceholder("xoxb-...")
+          .setValue(this.plugin.settings.slackBotToken)
+          .then((t) => {
+            t.inputEl.type = "password";
+            t.inputEl.style.width = "100%";
+          })
+          .onChange(async (value) => {
+            this.plugin.settings.slackBotToken = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    const slackStatusSetting = new Setting(containerEl)
+      .setName("Test Slack connection")
+      .setDesc("Verify your Slack bot token works.");
+
+    slackStatusSetting.addButton((btn) =>
+      btn.setButtonText("Test").onClick(async () => {
+        const token = this.plugin.settings.slackBotToken;
+        if (!token) {
+          new Notice("Slack: Enter a bot token first.");
+          return;
+        }
+        btn.setButtonText("Testing...");
+        btn.setDisabled(true);
+        try {
+          const client = new SlackClient(token);
+          const ok = await client.testConnection();
+          if (ok) {
+            new Notice("Slack: Connection successful!");
+            slackStatusSetting.setDesc("Connected ✓");
+          } else {
+            new Notice("Slack: Connection failed. Check your bot token.");
+            slackStatusSetting.setDesc("Connection failed — check your token.");
+          }
+        } catch {
+          new Notice("Slack: Connection failed.");
+          slackStatusSetting.setDesc("Connection failed — check your token.");
+        } finally {
+          btn.setButtonText("Test");
+          btn.setDisabled(false);
+        }
+      }),
+    );
+
+    new Setting(containerEl).setName("Slack folder").addText((text) =>
+      text
+        .setValue(this.plugin.settings.slackFolderName)
+        .onChange(async (value) => {
+          this.plugin.settings.slackFolderName = value.trim() || "Slack";
+          await this.plugin.savePluginSettings();
+        }),
+    );
+
+    containerEl.createEl("h3", { text: "GitHub" });
+
+    new Setting(containerEl)
+      .setName("Sync from GitHub")
+      .setDesc("Import pull requests and activity from GitHub.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.syncGithub)
+          .onChange(async (value) => {
+            this.plugin.settings.syncGithub = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("GitHub token")
+      .setDesc(
+        "Personal access token from GitHub Settings → Developer settings.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("ghp_...")
+          .setValue(this.plugin.settings.githubToken)
+          .then((t) => {
+            t.inputEl.type = "password";
+            t.inputEl.style.width = "100%";
+          })
+          .onChange(async (value) => {
+            this.plugin.settings.githubToken = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("GitHub organization")
+      .setDesc("Your GitHub org or user to sync repos from.")
+      .addText((text) =>
+        text
+          .setPlaceholder("my-org")
+          .setValue(this.plugin.settings.githubOrg)
+          .onChange(async (value) => {
+            this.plugin.settings.githubOrg = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    const githubStatusSetting = new Setting(containerEl)
+      .setName("Test GitHub connection")
+      .setDesc("Verify your GitHub token works.");
+
+    githubStatusSetting.addButton((btn) =>
+      btn.setButtonText("Test").onClick(async () => {
+        const token = this.plugin.settings.githubToken;
+        if (!token) {
+          new Notice("GitHub: Enter a token first.");
+          return;
+        }
+        btn.setButtonText("Testing...");
+        btn.setDisabled(true);
+        try {
+          const client = new GitHubClient(token);
+          const ok = await client.testConnection();
+          if (ok) {
+            new Notice("GitHub: Connection successful!");
+            githubStatusSetting.setDesc("Connected ✓");
+          } else {
+            new Notice("GitHub: Connection failed. Check your token.");
+            githubStatusSetting.setDesc(
+              "Connection failed — check your token.",
+            );
+          }
+        } catch {
+          new Notice("GitHub: Connection failed.");
+          githubStatusSetting.setDesc("Connection failed — check your token.");
+        } finally {
+          btn.setButtonText("Test");
+          btn.setDisabled(false);
+        }
+      }),
+    );
+
+    new Setting(containerEl).setName("GitHub folder").addText((text) =>
+      text
+        .setValue(this.plugin.settings.githubFolderName)
+        .onChange(async (value) => {
+          this.plugin.settings.githubFolderName = value.trim() || "GitHub";
+          await this.plugin.savePluginSettings();
+        }),
+    );
+
     containerEl.createEl("h3", { text: "AI (Claude)" });
 
     new Setting(containerEl)
@@ -301,14 +466,31 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Which Claude model to use for AI features.")
+      .setName("Fast model (routine tasks)")
+      .setDesc("Used for tagging, extraction, and quick classifications.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("claude-haiku-4-20250414", "Claude Haiku 4")
+          .addOption("claude-sonnet-4-20250514", "Claude Sonnet 4")
+          .setValue(this.plugin.settings.aiModelFast)
+          .onChange(async (value) => {
+            this.plugin.settings.aiModelFast = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Deep model (complex analysis)")
+      .setDesc(
+        "Used for briefs, digests, theme detection, and idea extraction.",
+      )
       .addDropdown((dd) =>
         dd
           .addOption("claude-sonnet-4-20250514", "Claude Sonnet 4")
           .addOption("claude-haiku-4-20250414", "Claude Haiku 4")
-          .setValue(this.plugin.settings.aiModel)
+          .setValue(this.plugin.settings.aiModelDeep)
           .onChange(async (value) => {
+            this.plugin.settings.aiModelDeep = value;
             this.plugin.settings.aiModel = value;
             await this.plugin.savePluginSettings();
           }),

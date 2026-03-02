@@ -123,6 +123,28 @@ export class LinearClient {
     return this.paginatedQuery<LinearProject>(query, "projects");
   }
 
+  async fetchCompletedIssues(since?: string): Promise<LinearIssue[]> {
+    let filterBlock = `state: { type: { eq: "completed" } }`;
+    if (since) {
+      filterBlock += `, completedAt: { gte: "${since}" }`;
+    }
+
+    const query = `query CompletedIssues($first: Int!, $after: String) {
+      issues(
+        filter: {
+          ${filterBlock}
+        }
+        first: $first
+        after: $after
+        orderBy: completedAt
+      ) {
+        nodes { ${ISSUE_FIELDS} }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`;
+    return this.paginatedQuery<LinearIssue>(query, "issues");
+  }
+
   private async paginatedQuery<T, TKey extends string = string>(
     query: string,
     connectionKey: TKey,

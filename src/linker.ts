@@ -5,6 +5,8 @@ interface LinkResult {
   meetingsLinked: number;
   issuesLinked: number;
   designsLinked: number;
+  slackLinked: number;
+  prsLinked: number;
 }
 
 export class Linker {
@@ -22,6 +24,8 @@ export class Linker {
       meetingsLinked: 0,
       issuesLinked: 0,
       designsLinked: 0,
+      slackLinked: 0,
+      prsLinked: 0,
     };
 
     const meetingFiles = this.getFilesInFolder(
@@ -63,6 +67,29 @@ export class Linker {
       if (updated) result.designsLinked++;
     }
 
+    const slackFiles = settings.syncSlack
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.slackFolderName}`,
+        )
+      : [];
+
+    for (const message of slackFiles) {
+      if (await this.linkSlackToCustomers(message, customerFiles))
+        result.slackLinked++;
+      if (await this.linkSlackToIssues(message, issueIndex))
+        result.slackLinked++;
+    }
+
+    const prFiles = settings.syncGithub
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.githubFolderName}`,
+        )
+      : [];
+
+    for (const pr of prFiles) {
+      result.prsLinked += await this.linkPRsToIssues(pr, issueFiles);
+    }
+
     return result;
   }
 
@@ -99,6 +126,60 @@ export class Linker {
     for (const file of designFiles) {
       const name = file.basename;
       index.set(name.toLowerCase(), { name, path: file.path });
+    }
+    return index;
+  }
+
+  private async buildSlackIndex(
+    slackFiles: TFile[],
+  ): Promise<
+    Map<string, { permalink: string; channel: string; path: string }>
+  > {
+    const index = new Map<
+      string,
+      { permalink: string; channel: string; path: string }
+    >();
+    for (const file of slackFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+      const permalink = fm.permalink ?? "";
+      const channel = fm.channel ?? "";
+      if (permalink) {
+        index.set(permalink, { permalink, channel, path: file.path });
+      }
+    }
+    return index;
+  }
+
+  private buildPRIndex(
+    prFiles: TFile[],
+  ): Map<
+    string,
+    { repo: string; number: number; path: string; related_issues: string[] }
+  > {
+    const index = new Map<
+      string,
+      {
+        repo: string;
+        number: number;
+        path: string;
+        related_issues: string[];
+      }
+    >();
+    for (const file of prFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+      const repo = fm.repo ?? "";
+      const prNumber = fm.pr_number ?? 0;
+      const relatedIssues: string[] = fm.related_issues ?? [];
+      if (repo && prNumber) {
+        index.set(`${repo}--${prNumber}`, {
+          repo,
+          number: prNumber,
+          path: file.path,
+          related_issues: relatedIssues,
+        });
+      }
     }
     return index;
   }
@@ -175,6 +256,106 @@ export class Linker {
     return false;
   }
 
+  private async linkSlackToCustomers(
+    message: TFile,
+    customerFiles: TFile[],
+  ): Promise<boolean> {
+    const content = await this.app.vault.read(message);
+    const bodyLower = content.replace(/^---[\s\S]*?---/, "").toLowerCase();
+
+    const matchedCustomers: string[] = [];
+    for (const customerFile of customerFiles) {
+      const customerName = customerFile.basename;
+      if (
+        customerName.length > 2 &&
+        bodyLower.includes(customerName.toLowerCase())
+      ) {
+        matchedCustomers.push(customerName);
+      }
+    }
+
+    if (matchedCustomers.length === 0) return false;
+
+    const updatedContent = this.upsertFrontmatterArrays(content, {
+      related_customers: matchedCustomers,
+    });
+
+    if (updatedContent !== content) {
+      await this.app.vault.modify(message, updatedContent);
+      return true;
+    }
+    return false;
+  }
+
+  private async linkSlackToIssues(
+    message: TFile,
+    issueIndex: Map<
+      string,
+      { identifier: string; title: string; path: string }
+    >,
+  ): Promise<boolean> {
+    const content = await this.app.vault.read(message);
+    const bodyContent = content.replace(/^---[\s\S]*?---/, "");
+
+    const matchedIssues: string[] = [];
+    const identifierPattern = /\b[A-Z]+-\d+\b/g;
+    let match: RegExpExecArray | null;
+    while ((match = identifierPattern.exec(bodyContent)) !== null) {
+      const id = match[0];
+      if (issueIndex.has(id) && !matchedIssues.includes(id)) {
+        matchedIssues.push(id);
+      }
+    }
+
+    if (matchedIssues.length === 0) return false;
+
+    const updatedContent = this.upsertFrontmatterArrays(content, {
+      related_issues: matchedIssues,
+    });
+
+    if (updatedContent !== content) {
+      await this.app.vault.modify(message, updatedContent);
+      return true;
+    }
+    return false;
+  }
+
+  private async linkPRsToIssues(
+    prFile: TFile,
+    issueFiles: TFile[],
+  ): Promise<number> {
+    const fm = this.app.metadataCache.getFileCache(prFile)?.frontmatter;
+    if (!fm) return 0;
+
+    const relatedIssues: string[] = fm.related_issues ?? [];
+    const repo: string = fm.repo ?? "";
+    const prNumber: number = fm.pr_number ?? 0;
+    if (relatedIssues.length === 0 || !repo || !prNumber) return 0;
+
+    const prRef = `${repo}#${prNumber}`;
+    let backlinksCreated = 0;
+
+    for (const issueId of relatedIssues) {
+      const issueFile = issueFiles.find((f) => {
+        const issueFm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+        return issueFm?.identifier === issueId;
+      });
+      if (!issueFile) continue;
+
+      const content = await this.app.vault.read(issueFile);
+      const updatedContent = this.upsertFrontmatterArrays(content, {
+        related_prs: [prRef],
+      });
+
+      if (updatedContent !== content) {
+        await this.app.vault.modify(issueFile, updatedContent);
+        backlinksCreated++;
+      }
+    }
+
+    return backlinksCreated;
+  }
+
   private async enrichCustomer360(
     customerFile: TFile,
     settings: GranolaAdoraSettings,
@@ -203,6 +384,12 @@ export class Linker {
         settings,
       );
       updated = this.insertBeforeUserContent(updated, designsSection);
+      modified = true;
+    }
+
+    if (settings.syncSlack && !content.includes("## Related Slack Messages")) {
+      const slackSection = this.buildSlackMessagesSection(settings);
+      updated = this.insertBeforeUserContent(updated, slackSection);
       modified = true;
     }
 
@@ -242,6 +429,19 @@ export class Linker {
       `FROM "${designsPath}"`,
       `WHERE contains(file.name, "${escaped}")`,
       "SORT last_modified DESC",
+      "```\n",
+    ].join("\n");
+  }
+
+  private buildSlackMessagesSection(settings: GranolaAdoraSettings): string {
+    const slackPath = `${settings.baseFolderPath}/${settings.slackFolderName}`;
+    return [
+      "## Related Slack Messages\n",
+      "```dataview",
+      `TABLE channel as "Channel", source_type as "Type", timestamp as "Time"`,
+      `FROM "${slackPath}"`,
+      `WHERE contains(related_customers, this.file.name)`,
+      "SORT timestamp DESC",
       "```\n",
     ].join("\n");
   }
@@ -299,6 +499,9 @@ export function formatLinkResult(result: LinkResult): string {
     parts.push(`${result.issuesLinked} issues linked`);
   if (result.designsLinked > 0)
     parts.push(`${result.designsLinked} customers enriched`);
+  if (result.slackLinked > 0)
+    parts.push(`${result.slackLinked} slack threads linked`);
+  if (result.prsLinked > 0) parts.push(`${result.prsLinked} PRs linked`);
   return parts.length > 0
     ? `Linking: ${parts.join(", ")}`
     : "Linking: no new connections found";

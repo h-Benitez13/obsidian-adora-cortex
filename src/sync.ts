@@ -2,20 +2,30 @@ import { App, normalizePath, TFile } from "obsidian";
 import { GranolaApiClient } from "./api";
 import { FigmaClient } from "./figma";
 import { LinearClient } from "./linear";
+import { GitHubClient } from "./github";
+import { SlackClient } from "./slack";
 import { AutoTagger } from "./tagger";
 import {
   renderMeetingNote,
   renderCustomerNote,
   sanitizeFileName,
 } from "./renderer";
-import { generateCustomer360, generateTeamProfile } from "./profiles";
+import {
+  generateCustomer360,
+  generateTeamProfile,
+  calculateHealthScore,
+  updateHealthScoreInContent,
+} from "./profiles";
+import { AICortex } from "./ai";
 import {
   FigmaFile,
+  GitHubPR,
   GranolaAdoraSettings,
   GranolaDocument,
   GranolaDocumentList,
   LinearIssue,
   LinearProject,
+  SlackMessage,
   SyncResult,
   WorkspaceMember,
 } from "./types";
@@ -52,6 +62,8 @@ export class SyncEngine {
       updated: 0,
       skipped: 0,
       errors: [],
+      slackMessages: 0,
+      githubPRs: 0,
     };
 
     await this.ensureFolderStructure(settings);
@@ -112,7 +124,11 @@ export class SyncEngine {
     }
 
     try {
-      await this.syncCustomer360Pages(allDocs);
+      await this.withTimeout(
+        this.syncCustomer360Pages(allDocs),
+        30000,
+        "Customer360",
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       result.errors.push(`Customer 360 sync failed: ${message}`);
@@ -120,7 +136,11 @@ export class SyncEngine {
 
     try {
       const members = await this.api.fetchWorkspaceMembers();
-      await this.syncTeamProfiles(members);
+      await this.withTimeout(
+        this.syncTeamProfiles(members),
+        30000,
+        "TeamProfiles",
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       result.errors.push(`Team profiles sync failed: ${message}`);
@@ -128,8 +148,14 @@ export class SyncEngine {
 
     if (settings.syncLinear && settings.linearApiKey) {
       try {
-        await this.syncLinearIssues();
-        await this.syncLinearProjects();
+        await this.withTimeout(
+          (async () => {
+            await this.syncLinearIssues();
+            await this.syncLinearProjects();
+          })(),
+          30000,
+          "Linear",
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         result.errors.push(`Linear sync failed: ${message}`);
@@ -142,10 +168,38 @@ export class SyncEngine {
       settings.figmaTeamId
     ) {
       try {
-        await this.syncFigmaFiles();
+        await this.withTimeout(this.syncFigmaFiles(), 30000, "Figma");
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         result.errors.push(`Figma sync failed: ${message}`);
+      }
+    }
+
+    if (settings.syncSlack && settings.slackBotToken) {
+      try {
+        const slackClient = new SlackClient(settings.slackBotToken);
+        result.slackMessages = await this.withTimeout(
+          this.syncSlackMessages(slackClient),
+          30000,
+          "Slack",
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        result.errors.push(`Slack sync failed: ${message}`);
+      }
+    }
+
+    if (settings.syncGithub && settings.githubToken && settings.githubOrg) {
+      try {
+        const githubClient = new GitHubClient(settings.githubToken);
+        result.githubPRs = await this.withTimeout(
+          this.syncGitHubPRs(githubClient),
+          30000,
+          "GitHub",
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        result.errors.push(`GitHub sync failed: ${message}`);
       }
     }
 
@@ -416,6 +470,262 @@ export class SyncEngine {
     return [...fm, ...body].join("\n");
   }
 
+  private async syncSlackMessages(client: SlackClient): Promise<number> {
+    const settings = this.getSettings();
+    const basePath = settings.baseFolderPath;
+    const slackFolder = `${basePath}/${settings.slackFolderName}`;
+    await this.ensureFolder(slackFolder);
+
+    const existingPermalinks = new Set<string>();
+    const allVaultFiles = this.app.vault.getMarkdownFiles();
+    const normalizedSlack = normalizePath(slackFolder);
+    for (const file of allVaultFiles) {
+      if (file.path.startsWith(normalizedSlack + "/")) {
+        const content = await this.app.vault.read(file);
+        const permalink = this.extractFrontmatterField(content, "permalink");
+        if (permalink) {
+          existingPermalinks.add(permalink);
+        }
+      }
+    }
+
+    const channels = await client.fetchChannels();
+    const channelMap = new Map<string, string>();
+    for (const ch of channels) {
+      channelMap.set(ch.id, ch.name);
+    }
+
+    let count = 0;
+
+    for (const channel of channels) {
+      try {
+        const pins = await client.fetchPins(channel.id);
+        for (const msg of pins) {
+          msg.channelName = channel.name;
+          if (msg.permalink && existingPermalinks.has(msg.permalink)) continue;
+          const filePath = this.buildSlackFilePath(
+            channel.name,
+            msg.timestamp,
+            slackFolder,
+          );
+          if (this.app.vault.getAbstractFileByPath(filePath)) continue;
+          const content = this.renderSlackNote(msg, "pin");
+          await this.app.vault.create(filePath, content);
+          if (msg.permalink) existingPermalinks.add(msg.permalink);
+          count++;
+        }
+      } catch {
+        /* channel may lack pin permissions */
+      }
+
+      try {
+        const bookmarks = await client.fetchBookmarks(channel.id);
+        for (const bookmark of bookmarks) {
+          if (existingPermalinks.has(bookmark.link)) continue;
+
+          const bookmarkMsg: SlackMessage = {
+            id: bookmark.id,
+            channel: channel.id,
+            channelName: channel.name,
+            user: "",
+            userName: "",
+            text: `[${bookmark.title}](${bookmark.link})`,
+            timestamp: String(bookmark.created),
+            threadTs: null,
+            reactions: [],
+            permalink: bookmark.link,
+          };
+          const filePath = this.buildSlackFilePath(
+            channel.name,
+            bookmarkMsg.timestamp,
+            slackFolder,
+          );
+          if (this.app.vault.getAbstractFileByPath(filePath)) continue;
+          const content = this.renderSlackNote(bookmarkMsg, "bookmark");
+          await this.app.vault.create(filePath, content);
+          existingPermalinks.add(bookmark.link);
+          count++;
+        }
+      } catch {
+        /* channel may lack bookmark permissions */
+      }
+
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    try {
+      const reacted = await client.fetchReactedMessages();
+      for (const msg of reacted) {
+        msg.channelName = channelMap.get(msg.channel) ?? msg.channel;
+        if (msg.permalink && existingPermalinks.has(msg.permalink)) continue;
+        const filePath = this.buildSlackFilePath(
+          msg.channelName,
+          msg.timestamp,
+          slackFolder,
+        );
+        if (this.app.vault.getAbstractFileByPath(filePath)) continue;
+        const content = this.renderSlackNote(msg, "reaction");
+        await this.app.vault.create(filePath, content);
+        if (msg.permalink) existingPermalinks.add(msg.permalink);
+        count++;
+      }
+    } catch {
+      /* reactions.list may not be available */
+    }
+
+    return count;
+  }
+
+  private renderSlackNote(msg: SlackMessage, sourceType: string): string {
+    const ts = new Date(parseFloat(msg.timestamp) * 1000).toISOString();
+
+    const fm = [
+      "---",
+      `type: "slack-message"`,
+      `source_type: "${sourceType}"`,
+      `channel: "${escapeYaml(msg.channelName)}"`,
+      `author: "${escapeYaml(msg.userName || msg.user)}"`,
+      `timestamp: "${ts}"`,
+      `permalink: "${escapeYaml(msg.permalink)}"`,
+    ];
+
+    if (msg.reactions.length > 0) {
+      fm.push("reactions:");
+      for (const r of msg.reactions) {
+        fm.push(`  - "${escapeYaml(r.name)} (${r.count})"`);
+      }
+    } else {
+      fm.push("reactions: []");
+    }
+
+    fm.push("tags:");
+    fm.push(`  - "slack"`);
+    fm.push(`  - "${sourceType}"`);
+    fm.push(`synced: "${new Date().toISOString()}"`);
+    fm.push("---");
+
+    const body = ["", `# Slack: ${msg.channelName}`, "", msg.text, ""];
+
+    if (msg.permalink) {
+      body.push(`[View in Slack](${msg.permalink})`);
+      body.push("");
+    }
+
+    return [...fm, ...body].join("\n");
+  }
+
+  private buildSlackFilePath(
+    channelName: string,
+    timestamp: string,
+    slackFolder: string,
+  ): string {
+    const epochMs = parseFloat(timestamp) * 1000;
+    const date = new Date(epochMs);
+    const y = date.getFullYear();
+    const mo = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    const h = String(date.getHours()).padStart(2, "0");
+    const mi = String(date.getMinutes()).padStart(2, "0");
+    const s = String(date.getSeconds()).padStart(2, "0");
+    const slug = `${y}-${mo}-${d}-${h}${mi}${s}`;
+    const fileName = sanitizeFileName(`${channelName}--${slug}`);
+    return normalizePath(`${slackFolder}/${fileName}.md`);
+  }
+
+  private async syncGitHubPRs(githubClient: GitHubClient): Promise<number> {
+    const settings = this.getSettings();
+    const githubFolder = `${settings.baseFolderPath}/${settings.githubFolderName}`;
+    await this.ensureFolder(githubFolder);
+
+    const repos = await githubClient.fetchOrgRepos(settings.githubOrg);
+    let prCount = 0;
+
+    for (const repo of repos) {
+      const prs = await githubClient.fetchPullRequests(
+        repo.owner.login,
+        repo.name,
+      );
+
+      for (const pr of prs) {
+        const fileName = sanitizeFileName(`${repo.name}--PR-${pr.number}`);
+        const filePath = normalizePath(`${githubFolder}/${fileName}.md`);
+        const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+        if (existingFile instanceof TFile) {
+          const existing = await this.app.vault.read(existingFile);
+          const existingUpdated =
+            this.extractFrontmatterField(existing, "updated") ?? "";
+          if (existingUpdated >= pr.updatedAt) continue;
+          const linearIssueIds = githubClient.extractLinearIssueIds(
+            pr.title,
+            pr.body,
+          );
+          await this.app.vault.modify(
+            existingFile,
+            this.renderGitHubPRNote(pr, linearIssueIds),
+          );
+        } else {
+          const linearIssueIds = githubClient.extractLinearIssueIds(
+            pr.title,
+            pr.body,
+          );
+          await this.app.vault.create(
+            filePath,
+            this.renderGitHubPRNote(pr, linearIssueIds),
+          );
+        }
+        prCount++;
+      }
+    }
+
+    return prCount;
+  }
+
+  private renderGitHubPRNote(pr: GitHubPR, linearIssueIds: string[]): string {
+    const tags = ["github", "pr", `state/${pr.state}`];
+
+    const fm = [
+      "---",
+      `type: "github-pr"`,
+      `pr_number: ${pr.number}`,
+      `repo: "${escapeYaml(pr.repo)}"`,
+      `author: "${escapeYaml(pr.author)}"`,
+      `state: "${pr.state}"`,
+      `head_branch: "${escapeYaml(pr.headBranch)}"`,
+      `base_branch: "${escapeYaml(pr.baseBranch)}"`,
+      `created: "${pr.createdAt}"`,
+      `updated: "${pr.updatedAt}"`,
+    ];
+
+    if (pr.mergedAt) {
+      fm.push(`merged: "${pr.mergedAt}"`);
+    }
+
+    fm.push(`html_url: "${escapeYaml(pr.url)}"`);
+
+    if (linearIssueIds.length > 0) {
+      fm.push("related_issues:");
+      for (const id of linearIssueIds) {
+        fm.push(`  - "${escapeYaml(id)}"`);
+      }
+    }
+
+    fm.push("tags:");
+    for (const tag of tags) {
+      fm.push(`  - "${tag}"`);
+    }
+    fm.push("---");
+
+    const body: string[] = ["", `# ${pr.title}`, ""];
+
+    if (pr.body) {
+      body.push(pr.body);
+      body.push("");
+    }
+
+    return [...fm, ...body].join("\n");
+  }
+
   private async syncCustomer360Pages(
     allDocs: GranolaDocument[],
   ): Promise<void> {
@@ -432,10 +742,28 @@ export class SyncEngine {
       }
     }
 
+    const meetingFiles = settings.healthScoreEnabled
+      ? this.app.vault
+          .getMarkdownFiles()
+          .filter((f) => f.path.startsWith(meetingsFolderPath + "/"))
+      : [];
+    const issueFiles =
+      settings.healthScoreEnabled && settings.syncLinear
+        ? this.app.vault
+            .getMarkdownFiles()
+            .filter((f) =>
+              f.path.startsWith(
+                `${basePath}/${settings.linearFolderName}/Issues/`,
+              ),
+            )
+        : [];
+
     for (const customer of customerSet) {
       const fileName = sanitizeFileName(customer);
       const filePath = normalizePath(`${customersFolderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+      let finalContent: string;
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -454,25 +782,61 @@ export class SyncEngine {
             generatedMarkerIndex !== -1
               ? generated.substring(0, generatedMarkerIndex)
               : generated;
-          await this.app.vault.modify(
-            existingFile,
-            generatedAbove + userContent,
-          );
+          finalContent = generatedAbove + userContent;
         } else {
-          const content = generateCustomer360(
+          finalContent = generateCustomer360(
             customer,
             meetingsFolderPath,
             basePath,
           );
-          await this.app.vault.modify(existingFile, content);
         }
       } else {
-        const content = generateCustomer360(
+        finalContent = generateCustomer360(
           customer,
           meetingsFolderPath,
           basePath,
         );
-        await this.app.vault.create(filePath, content);
+      }
+
+      if (settings.healthScoreEnabled) {
+        let sentimentScore: number | undefined;
+
+        if (settings.aiEnabled && settings.claudeApiKey) {
+          try {
+            const customerLower = customer.toLowerCase();
+            const customerMeetings = meetingFiles.filter((f) =>
+              f.basename.toLowerCase().includes(customerLower),
+            );
+            const excerpts: string[] = [];
+            for (const mf of customerMeetings.slice(0, 5)) {
+              const raw = await this.app.vault.read(mf);
+              const stripped = raw.replace(/^---[\s\S]*?---/, "").trim();
+              excerpts.push(stripped.substring(0, 500));
+            }
+            if (excerpts.length > 0) {
+              const cortex = new AICortex(
+                settings.claudeApiKey,
+                settings.aiModelFast,
+                settings.aiModelDeep,
+              );
+              sentimentScore = await cortex.analyzeSentiment(excerpts);
+            }
+          } catch {}
+        }
+
+        const health = calculateHealthScore(
+          customer,
+          meetingFiles,
+          issueFiles,
+          sentimentScore,
+        );
+        finalContent = updateHealthScoreInContent(finalContent, health);
+      }
+
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, finalContent);
+      } else {
+        await this.app.vault.create(filePath, finalContent);
       }
     }
   }
@@ -606,6 +970,19 @@ export class SyncEngine {
       folders.push(`${settings.baseFolderPath}/${settings.digestsFolderName}`);
     }
 
+    if (settings.syncSlack) {
+      folders.push(`${settings.baseFolderPath}/${settings.slackFolderName}`);
+    }
+
+    if (settings.syncGithub) {
+      folders.push(`${settings.baseFolderPath}/${settings.githubFolderName}`);
+    }
+
+    folders.push(`${settings.baseFolderPath}/${settings.decisionsFolderName}`);
+    folders.push(
+      `${settings.baseFolderPath}/${settings.releaseNotesFolderName}`,
+    );
+
     for (const folder of folders) {
       await this.ensureFolder(folder);
     }
@@ -668,6 +1045,22 @@ export class SyncEngine {
   ): string | null {
     const match = content.match(new RegExp(`${field}:\\s*"([^"]+)"`));
     return match ? match[1] : null;
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    label: string,
+  ): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`${label} sync timed out after ${ms}ms`)),
+          ms,
+        ),
+      ),
+    ]);
   }
 }
 

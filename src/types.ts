@@ -158,6 +158,77 @@ export interface FigmaProject {
   name: string;
 }
 
+// ── Slack types ──
+
+export interface SlackMessage {
+  id: string;
+  channel: string;
+  channelName: string;
+  user: string;
+  userName: string;
+  text: string;
+  timestamp: string;
+  threadTs: string | null;
+  reactions: { name: string; count: number }[];
+  permalink: string;
+}
+
+// ── GitHub types ──
+
+export interface GitHubPR {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: "open" | "closed" | "merged";
+  author: string;
+  repo: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+  labels: string[];
+  reviewers: string[];
+  url: string;
+}
+
+// ── Decision / Release / Health types ──
+
+export interface Decision {
+  id: string;
+  title: string;
+  context: string;
+  decision: string;
+  rationale: string;
+  participants: string[];
+  sourceMeetingId: string | null;
+  date: string;
+  status: "proposed" | "accepted" | "superseded";
+  tags: string[];
+}
+
+export interface ReleaseNote {
+  id: string;
+  version: string;
+  title: string;
+  summary: string;
+  features: string[];
+  bugfixes: string[];
+  breakingChanges: string[];
+  date: string;
+  prs: number[];
+}
+
+export interface HealthScore {
+  score: number;
+  tier: "healthy" | "at-risk" | "critical";
+  meeting_frequency: number;
+  open_issues: number;
+  sentiment?: number;
+  last_calculated: string;
+}
+
 // ── Plugin settings ──
 
 export interface GranolaAdoraSettings {
@@ -190,6 +261,18 @@ export interface GranolaAdoraSettings {
   aiEnabled: boolean;
   aiModel: string;
   digestsFolderName: string;
+  syncSlack: boolean;
+  slackBotToken: string;
+  slackFolderName: string;
+  syncGithub: boolean;
+  githubToken: string;
+  githubOrg: string;
+  githubFolderName: string;
+  healthScoreEnabled: boolean;
+  decisionsFolderName: string;
+  releaseNotesFolderName: string;
+  aiModelFast: string;
+  aiModelDeep: string;
 }
 
 export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
@@ -233,6 +316,18 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   aiEnabled: false,
   aiModel: "claude-sonnet-4-20250514",
   digestsFolderName: "Digests",
+  syncSlack: false,
+  slackBotToken: "",
+  slackFolderName: "Slack",
+  syncGithub: false,
+  githubToken: "",
+  githubOrg: "",
+  githubFolderName: "GitHub",
+  healthScoreEnabled: false,
+  decisionsFolderName: "Decisions",
+  releaseNotesFolderName: "Releases",
+  aiModelFast: "claude-haiku-4-20250414",
+  aiModelDeep: "claude-sonnet-4-20250514",
 };
 
 export interface SyncResult {
@@ -240,6 +335,8 @@ export interface SyncResult {
   updated: number;
   skipped: number;
   errors: string[];
+  slackMessages: number;
+  githubPRs: number;
 }
 
 export interface ExtractedTags {

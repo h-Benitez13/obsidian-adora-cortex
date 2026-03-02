@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import { LinearIssue, Decision } from "./types";
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
@@ -9,10 +10,14 @@ interface ClaudeResponse {
 export class AICortex {
   private apiKey: string;
   private model: string;
+  private fastModel: string;
+  private deepModel: string;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, fastModel: string, deepModel: string) {
     this.apiKey = apiKey;
-    this.model = model;
+    this.fastModel = fastModel;
+    this.deepModel = deepModel;
+    this.model = deepModel;
   }
 
   async generateCustomerPrepBrief(
@@ -24,7 +29,7 @@ export class AICortex {
       .map((s) => this.truncate(s))
       .join("\n\n---\n\n");
 
-    return this.callClaude(
+    return this.callClaudeDeep(
       "You are a customer intelligence analyst for Adora AI, a Seattle-based SaaS startup with 17 people. You help the team prepare for customer meetings by synthesizing past interactions into actionable briefs. Output clean markdown.",
       `Customer: ${customerName}\n\nRecent meeting notes with this customer:\n\n${truncated}\n\nGenerate a customer prep brief with these sections:\n## Relationship Summary\nBrief overview of the relationship history and current status.\n\n## Recent Discussion Topics\nKey topics from recent meetings.\n\n## Open Items & Action Items\nAnything unresolved or pending.\n\n## Suggested Talking Points\nRecommended topics for the next conversation.`,
     );
@@ -33,6 +38,10 @@ export class AICortex {
   async generateWeeklyDigest(
     meetingSummaries: string[],
     issuesSummary: string,
+    slackMessages: string[],
+    pullRequests: string[],
+    decisions: string[],
+    healthScores: string[],
   ): Promise<string> {
     const truncated = meetingSummaries
       .slice(0, 15)
@@ -43,9 +52,32 @@ export class AICortex {
       ? `\n\nActive engineering issues:\n${this.truncate(issuesSummary, 4000)}`
       : "";
 
-    return this.callClaude(
+    const slackBlock =
+      slackMessages.length > 0
+        ? `\n\nSlack Highlights:\n${this.truncate(slackMessages.join("\n"), 3000)}`
+        : "";
+
+    const prBlock =
+      pullRequests.length > 0
+        ? `\n\nDevelopment Activity (PRs):\n${this.truncate(pullRequests.join("\n"), 3000)}`
+        : "";
+
+    const decisionsBlock =
+      decisions.length > 0
+        ? `\n\nDecisions Made:\n${this.truncate(decisions.join("\n"), 2000)}`
+        : "";
+
+    const healthBlock =
+      healthScores.length > 0
+        ? `\n\nCustomer Health Overview:\n${this.truncate(healthScores.join("\n"), 2000)}`
+        : "";
+
+    const allData = `${truncated}${issuesBlock}${slackBlock}${prBlock}${decisionsBlock}${healthBlock}`;
+    const finalTruncated = this.truncate(allData, 12000);
+
+    return this.callClaudeDeep(
       "You are a company intelligence analyst for Adora AI, a Seattle-based SaaS startup with 17 people. Synthesize the week's activity into a concise, actionable digest for the whole team. Output clean markdown.",
-      `This week's meeting notes:\n\n${truncated}${issuesBlock}\n\nGenerate a weekly digest with these sections:\n## Key Themes\nMain topics and patterns from this week.\n\n## Customer Activity\nSummary of customer interactions and sentiment.\n\n## Action Items\nPending tasks and follow-ups.\n\n## New Ideas & Opportunities\nAny new ideas or opportunities surfaced.\n\n## Team Highlights\nNotable contributions or wins.`,
+      `Generate a comprehensive weekly digest from the following data sources. Only include sections with data:\n\n${finalTruncated}\n\nCreate these sections:\n## Meeting Summary\nKey themes and decisions from meetings.\n\n## Issue Updates\nActive engineering work and progress.\n\n## Slack Highlights\nImportant discussions and announcements from Slack.\n\n## Development Activity\nPull requests and code changes by repository.\n\n## Decisions Made\nKey decisions made this week with context.\n\n## Customer Health Overview\nCustomer health scores and at-risk accounts.\n\nBe concise but informative. Focus on actionable insights.`,
     );
   }
 
@@ -55,16 +87,96 @@ export class AICortex {
       .map((s) => this.truncate(s))
       .join("\n\n---\n\n");
 
-    return this.callClaude(
+    return this.callClaudeDeep(
       "You are a pattern detection analyst for Adora AI, a Seattle-based SaaS startup. Analyze meeting content to surface recurring themes and emerging patterns. Output clean markdown.",
       `Recent meeting notes:\n\n${truncated}\n\nAnalyze these meetings and generate a theme report with:\n## Recurring Themes\nTopics that come up repeatedly.\n\n## Emerging Patterns\nNew trends or shifts in conversation.\n\n## Customer Sentiment\nOverall tone and satisfaction indicators.\n\n## Feature Requests\nProduct features or improvements mentioned.\n\n## Risks & Concerns\nPotential issues to watch.`,
     );
   }
 
+  async analyzeSentiment(meetingExcerpts: string[]): Promise<number> {
+    const truncated = meetingExcerpts
+      .slice(0, 5)
+      .map((s) => this.truncate(s, 500))
+      .join("\n\n---\n\n");
+
+    const response = await this.callClaudeFast(
+      "Rate the overall customer sentiment from these meeting excerpts on a 0-100 scale. Return ONLY a number.",
+      truncated,
+    );
+
+    const parsed = parseInt(response.trim(), 10);
+    if (isNaN(parsed)) return 50;
+    return Math.max(0, Math.min(100, parsed));
+  }
+
   async extractIdeas(meetingContent: string): Promise<string> {
-    return this.callClaude(
+    return this.callClaudeDeep(
       "You are a product strategist for Adora AI, a Seattle-based SaaS startup. Extract actionable ideas from meeting notes. Output clean markdown as a numbered list.",
       `Meeting content:\n\n${this.truncate(meetingContent, 12000)}\n\nExtract all actionable ideas, product suggestions, feature requests, and process improvements. For each idea, provide:\n- A clear title\n- Brief description\n- Potential impact (high/medium/low)\n\nFormat as a numbered list.`,
+    );
+  }
+
+  async extractDecisions(meetingContent: string): Promise<Decision[]> {
+    const truncated = this.truncate(meetingContent, 8000);
+
+    const response = await this.callClaudeDeep(
+      'Extract key decisions from this meeting transcript.\nFor each decision, provide:\n- summary: One sentence describing the decision\n- context: Why this decision was made (2-3 sentences)\n- stakeholders: Array of people involved\n\nReturn as JSON array: [{"summary": "...", "context": "...", "stakeholders": ["..."]}]\nReturn ONLY valid JSON, no markdown formatting.',
+      `Meeting content:\n\n${truncated}`,
+    );
+
+    try {
+      const cleaned = response
+        .replace(/```json?\n?/g, "")
+        .replace(/```/g, "")
+        .trim();
+      const parsed = JSON.parse(cleaned);
+      if (!Array.isArray(parsed)) return [];
+
+      const now = new Date().toISOString().split("T")[0];
+      return parsed.map(
+        (item: {
+          summary?: string;
+          context?: string;
+          stakeholders?: string[];
+        }) => ({
+          id: `dec-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+          title: item.summary ?? "",
+          context: item.context ?? "",
+          decision: item.summary ?? "",
+          rationale: item.context ?? "",
+          participants: item.stakeholders ?? [],
+          sourceMeetingId: null,
+          date: now,
+          status: "proposed" as const,
+          tags: ["decision"],
+        }),
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  async generateReleaseNotes(
+    issuesByProject: Record<string, LinearIssue[]>,
+  ): Promise<string> {
+    const projectBlocks = Object.entries(issuesByProject)
+      .map(([projectName, issues]) => {
+        const issueLines = issues
+          .map((issue) => {
+            const labels = issue.labels.nodes.map((l) => l.name).join(", ");
+            const labelStr = labels ? ` [${labels}]` : "";
+            return `- **${issue.identifier}**: ${issue.title}${labelStr}`;
+          })
+          .join("\n");
+        return `## ${projectName}\n\n${issueLines}`;
+      })
+      .join("\n\n");
+
+    const truncated = this.truncate(projectBlocks, 10000);
+
+    return this.callClaudeDeep(
+      "Generate professional release notes from these completed issues, grouped by project. For each issue, write a concise user-facing description (1-2 sentences). Focus on what changed for the user, not technical implementation details. Output clean markdown with project headings (## Project Name) and bullet lists.",
+      `Completed issues by project:\n\n${truncated}`,
     );
   }
 
@@ -90,6 +202,62 @@ export class AICortex {
       },
       body: JSON.stringify({
         model: this.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+
+    if (response.status >= 400) {
+      throw new Error(`Claude API error ${response.status}: ${response.text}`);
+    }
+
+    const data = response.json as ClaudeResponse;
+    return data.content?.[0]?.text ?? "";
+  }
+
+  private async callClaudeFast(
+    systemPrompt: string,
+    userContent: string,
+  ): Promise<string> {
+    const response = await requestUrl({
+      url: ANTHROPIC_API,
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.fastModel,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+
+    if (response.status >= 400) {
+      throw new Error(`Claude API error ${response.status}: ${response.text}`);
+    }
+
+    const data = response.json as ClaudeResponse;
+    return data.content?.[0]?.text ?? "";
+  }
+
+  private async callClaudeDeep(
+    systemPrompt: string,
+    userContent: string,
+  ): Promise<string> {
+    const response = await requestUrl({
+      url: ANTHROPIC_API,
+      method: "POST",
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.deepModel,
         max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],

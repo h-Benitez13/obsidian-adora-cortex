@@ -1,4 +1,5 @@
-import { WorkspaceMember } from "./types";
+import { TFile } from "obsidian";
+import { HealthScore, WorkspaceMember } from "./types";
 
 function escapeYaml(input: string): string {
   return input.replace(/"/g, '\\"').replace(/\n/g, " ");
@@ -49,6 +50,132 @@ export function generateCustomer360(
   ];
 
   return [...fm, ...body].join("\n");
+}
+
+// ── Health Score ──
+
+function capitalizeTier(tier: string): string {
+  return tier
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join("-");
+}
+
+function buildHealthScoreSection(health: HealthScore): string {
+  const tier = capitalizeTier(health.tier);
+  const lines = [
+    `## Health Score: ${health.score}/100 (${tier})`,
+    "",
+    "| Metric | Value |",
+    "| --- | --- |",
+    `| Meeting Frequency (30d) | ${health.meeting_frequency} meetings |`,
+    `| Open Issues | ${health.open_issues} issues |`,
+  ];
+  if (health.sentiment !== undefined) {
+    lines.push(`| AI Sentiment | ${health.sentiment}/100 |`);
+  }
+  lines.push(`| Last Calculated | ${health.last_calculated.split("T")[0]} |`);
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function calculateHealthScore(
+  customerName: string,
+  meetings: TFile[],
+  issues: TFile[],
+  sentimentScore?: number,
+): HealthScore {
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const customerLower = customerName.toLowerCase();
+
+  const recentCustomerMeetings = meetings.filter(
+    (m) =>
+      m.stat.mtime > thirtyDaysAgo &&
+      m.basename.toLowerCase().includes(customerLower),
+  );
+  const meetingCount = recentCustomerMeetings.length;
+  const meetingFrequencyScore = Math.min(meetingCount / 4, 1) * 100;
+
+  const customerIssues = issues.filter((i) =>
+    i.basename.toLowerCase().includes(customerLower),
+  );
+  const issueCount = customerIssues.length;
+  const issuesScore = Math.max(0, 100 - issueCount * 10);
+
+  let score: number;
+  if (sentimentScore !== undefined) {
+    score = Math.round(
+      meetingFrequencyScore * 0.33 + issuesScore * 0.33 + sentimentScore * 0.34,
+    );
+  } else {
+    score = Math.round(meetingFrequencyScore * 0.5 + issuesScore * 0.5);
+  }
+
+  const tier: HealthScore["tier"] =
+    score >= 70 ? "healthy" : score >= 40 ? "at-risk" : "critical";
+
+  return {
+    score,
+    tier,
+    meeting_frequency: meetingCount,
+    open_issues: issueCount,
+    sentiment: sentimentScore,
+    last_calculated: new Date().toISOString(),
+  };
+}
+
+export function updateHealthScoreInContent(
+  content: string,
+  health: HealthScore,
+): string {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const fmLines = fmMatch[1]
+      .split("\n")
+      .filter(
+        (line) =>
+          !line.startsWith("health_score:") &&
+          !line.startsWith("health_tier:") &&
+          !line.startsWith("health_last_calculated:"),
+      );
+    fmLines.push(`health_score: ${health.score}`);
+    fmLines.push(`health_tier: "${health.tier}"`);
+    fmLines.push(`health_last_calculated: "${health.last_calculated}"`);
+    content =
+      "---\n" +
+      fmLines.join("\n") +
+      "\n---" +
+      content.substring(fmMatch[0].length);
+  }
+
+  const healthSection = buildHealthScoreSection(health);
+  const lines = content.split("\n");
+  const healthIdx = lines.findIndex((l) => l.startsWith("## Health Score:"));
+
+  if (healthIdx !== -1) {
+    let endIdx = healthIdx + 1;
+    while (endIdx < lines.length) {
+      if (
+        lines[endIdx].startsWith("## ") ||
+        lines[endIdx].includes("<!-- user-content -->")
+      ) {
+        break;
+      }
+      endIdx++;
+    }
+    const before = lines.slice(0, healthIdx);
+    const after = lines.slice(endIdx);
+    return [...before, healthSection, ...after].join("\n");
+  }
+
+  const markerIdx = lines.findIndex((l) => l.includes("<!-- user-content -->"));
+  if (markerIdx !== -1) {
+    const before = lines.slice(0, markerIdx);
+    const after = lines.slice(markerIdx);
+    return [...before, healthSection, ...after].join("\n");
+  }
+
+  return content.trimEnd() + "\n\n" + healthSection;
 }
 
 export function generateTeamProfile(

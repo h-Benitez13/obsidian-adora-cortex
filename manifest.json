@@ -6,5 +6,5 @@
   "description": "Sync Granola meeting notes into Obsidian and build a connected knowledge graph for ideas, customer feedback, and priorities.",
   "author": "Adora AI",
   "authorUrl": "https://adora.ai",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }
