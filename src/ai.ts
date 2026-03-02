@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { LinearIssue, Decision } from "./types";
+import { AskAdoraMessage, LinearIssue, Decision } from "./types";
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
@@ -102,6 +102,31 @@ export class AICortex {
     return this.callClaudeDeep(
       "You are a product intelligence analyst for Adora AI. Synthesize sales and customer success conversations into a ranked customer ask report. Output clean markdown.",
       `Meeting notes from the last 30 days:\n\n${truncated}\n\nGenerate a report titled "Top 10 Customer Asks" with these sections:\n## Top 10 Customer Asks\nA numbered list from most frequent to least frequent.\nFor each ask include:\n- Ask summary (one line)\n- Mention frequency estimate (number of meetings/customers)\n- Customers who mentioned it (if known)\n- Why it matters (business impact)\n- One representative quote or evidence line from notes\n\n## Segment Notes\nHighlight any differences between sales and customer success asks.\n\n## Recommended Next Actions\n3-5 concrete product follow-ups for the team.\n\nKeep it concise and practical.`,
+    );
+  }
+
+  async askAnything(
+    messages: AskAdoraMessage[],
+    context: string,
+  ): Promise<string> {
+    const systemPrompt = [
+      "You are Ask Adora, an internal analyst assistant for Adora AI.",
+      "Answer using the provided vault context when relevant.",
+      "If the context does not contain enough evidence, say what is missing and suggest next steps.",
+      "Be concise, accurate, and practical.",
+      "",
+      "Vault context:",
+      this.truncate(context || "No additional context provided.", 12000),
+    ].join("\n");
+
+    const sanitizedMessages = messages
+      .slice(-20)
+      .map((m) => ({ role: m.role, content: this.truncate(m.content, 4000) }));
+
+    return this.callClaudeWithMessages(
+      this.deepModel,
+      systemPrompt,
+      sanitizedMessages,
     );
   }
 
@@ -228,9 +253,10 @@ export class AICortex {
     return data.content?.[0]?.text ?? "";
   }
 
-  private async callClaudeFast(
+  private async callClaudeWithMessages(
+    model: string,
     systemPrompt: string,
-    userContent: string,
+    messages: AskAdoraMessage[],
   ): Promise<string> {
     const response = await requestUrl({
       url: ANTHROPIC_API,
@@ -241,10 +267,13 @@ export class AICortex {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: this.fastModel,
+        model,
         max_tokens: 4096,
         system: systemPrompt,
-        messages: [{ role: "user", content: userContent }],
+        messages: messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
       }),
     });
 
@@ -256,31 +285,21 @@ export class AICortex {
     return data.content?.[0]?.text ?? "";
   }
 
+  private async callClaudeFast(
+    systemPrompt: string,
+    userContent: string,
+  ): Promise<string> {
+    return this.callClaudeWithMessages(this.fastModel, systemPrompt, [
+      { role: "user", content: userContent },
+    ]);
+  }
+
   private async callClaudeDeep(
     systemPrompt: string,
     userContent: string,
   ): Promise<string> {
-    const response = await requestUrl({
-      url: ANTHROPIC_API,
-      method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.deepModel,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userContent }],
-      }),
-    });
-
-    if (response.status >= 400) {
-      throw new Error(`Claude API error ${response.status}: ${response.text}`);
-    }
-
-    const data = response.json as ClaudeResponse;
-    return data.content?.[0]?.text ?? "";
+    return this.callClaudeWithMessages(this.deepModel, systemPrompt, [
+      { role: "user", content: userContent },
+    ]);
   }
 }

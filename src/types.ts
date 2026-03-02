@@ -203,6 +203,11 @@ export interface GoogleDriveFile {
   webViewLink: string;
 }
 
+export interface AskAdoraMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 // ── Decision / Release / Health types ──
 
 export interface Decision {

@@ -20,6 +20,26 @@ Obsidian plugin that syncs company context into a local vault and turns it into 
 - Idea extraction
 - Release notes
 - Decision extraction and logging
+- Ask Adora chat panel (free-form Q&A)
+
+## Ask Adora chat panel
+
+Open from command palette:
+
+- `Open Ask Adora chat panel`
+
+Or click the ribbon icon:
+
+- `Ask Adora`
+
+The panel supports free-form questions and can include:
+
+- active note context
+- recent meeting summaries
+- recent AI digest summaries
+- save current conversation
+- load latest saved conversation
+- load conversation from active note
 
 ## Team onboarding
 

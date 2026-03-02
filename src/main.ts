@@ -6,12 +6,14 @@ import {
   Setting,
   normalizePath,
   TFile,
+  WorkspaceLeaf,
 } from "obsidian";
 import {
   GranolaAdoraSettings,
   DEFAULT_SETTINGS,
   Decision,
   TeamConfigTemplate,
+  AskAdoraMessage,
 } from "./types";
 import { GranolaApiClient } from "./api";
 import { AutoTagger } from "./tagger";
@@ -23,6 +25,7 @@ import { AICortex } from "./ai";
 import { Linker, formatLinkResult } from "./linker";
 import { calculateHealthScore, updateHealthScoreInContent } from "./profiles";
 import { LinearClient } from "./linear";
+import { ASK_ADORA_VIEW_TYPE, AskAdoraView } from "./ask-adora-view";
 
 export default class GranolaAdoraPlugin extends Plugin {
   settings: GranolaAdoraSettings = DEFAULT_SETTINGS;
@@ -52,11 +55,25 @@ export default class GranolaAdoraPlugin extends Plugin {
     this.addRibbonIcon("refresh-cw", "Sync Granola", () => {
       this.runSync();
     });
+    this.addRibbonIcon("message-square", "Ask Adora", () => {
+      this.activateAskAdoraView();
+    });
+
+    this.registerView(
+      ASK_ADORA_VIEW_TYPE,
+      (leaf) => new AskAdoraView(leaf, this),
+    );
 
     this.addCommand({
       id: "granola-sync",
       name: "Sync meetings from Granola",
       callback: () => this.runSync(),
+    });
+
+    this.addCommand({
+      id: "granola-open-ask-adora",
+      name: "Open Ask Adora chat panel",
+      callback: () => this.activateAskAdoraView(),
     });
 
     this.addCommand({
@@ -229,6 +246,7 @@ export default class GranolaAdoraPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.app.workspace.detachLeavesOfType(ASK_ADORA_VIEW_TYPE);
     this.stopAutoSync();
   }
 
@@ -487,6 +505,97 @@ export default class GranolaAdoraPlugin extends Plugin {
       window.clearInterval(this.autoSyncIntervalId);
       this.autoSyncIntervalId = null;
     }
+  }
+
+  async activateAskAdoraView(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf: WorkspaceLeaf | null = null;
+    const leaves = workspace.getLeavesOfType(ASK_ADORA_VIEW_TYPE);
+
+    if (leaves.length > 0) {
+      leaf = leaves[0];
+    } else {
+      leaf = workspace.getRightLeaf(false);
+      if (leaf) {
+        await leaf.setViewState({
+          type: ASK_ADORA_VIEW_TYPE,
+          active: true,
+        });
+      }
+    }
+
+    if (leaf) {
+      workspace.revealLeaf(leaf);
+    }
+  }
+
+  async askAdora(messages: AskAdoraMessage[], context: string): Promise<string> {
+    const ai = this.requireAI();
+    if (!ai) {
+      throw new Error(
+        "AI features are disabled. Enable AI and add Claude API key in settings.",
+      );
+    }
+    return ai.askAnything(messages, context);
+  }
+
+  async buildAskAdoraContext(options: {
+    includeActiveNote: boolean;
+    includeRecentMeetings: boolean;
+    includeRecentDigests: boolean;
+    recentMeetingCount: number;
+  }): Promise<string> {
+    const blocks: string[] = [];
+
+    if (options.includeActiveNote) {
+      const activeFile = this.app.workspace.getActiveFile();
+      if (activeFile) {
+        const content = await this.app.vault.read(activeFile);
+        blocks.push(
+          `## Active Note: ${activeFile.path}\n${content.substring(0, 4000)}`,
+        );
+      }
+    }
+
+    if (options.includeRecentMeetings) {
+      const meetingFiles = this.getMeetingFiles().sort((a, b) => {
+        const aDate =
+          this.app.metadataCache.getFileCache(a)?.frontmatter?.date ?? "";
+        const bDate =
+          this.app.metadataCache.getFileCache(b)?.frontmatter?.date ?? "";
+        return bDate.localeCompare(aDate);
+      });
+      const summaries: string[] = [];
+      for (const file of meetingFiles.slice(0, options.recentMeetingCount)) {
+        summaries.push(await this.getMeetingSummary(file));
+      }
+      if (summaries.length > 0) {
+        blocks.push(`## Recent Meetings\n${summaries.join("\n\n---\n\n")}`);
+      }
+    }
+
+    if (options.includeRecentDigests) {
+      const digestFolderPrefix = `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/`;
+      const digestFiles = this.app.vault
+        .getMarkdownFiles()
+        .filter((f) => f.path.startsWith(digestFolderPrefix))
+        .sort((a, b) => b.stat.mtime - a.stat.mtime)
+        .slice(0, 8);
+
+      const digestSummaries: string[] = [];
+      for (const file of digestFiles) {
+        const content = await this.app.vault.read(file);
+        const stripped = content.replace(/^---[\s\S]*?---/, "").trim();
+        digestSummaries.push(
+          `### ${file.basename}\n${stripped.substring(0, 1200)}`,
+        );
+      }
+      if (digestSummaries.length > 0) {
+        blocks.push(`## Recent Digests\n${digestSummaries.join("\n\n")}`);
+      }
+    }
+
+    return blocks.join("\n\n");
   }
 
   private async runSync(): Promise<void> {

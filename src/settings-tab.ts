@@ -660,6 +660,15 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         }),
     );
 
+    new Setting(containerEl)
+      .setName("Ask Adora chat panel")
+      .setDesc("Open the AI chat panel for free-form questions.")
+      .addButton((btn) =>
+        btn.setButtonText("Open panel").setCta().onClick(async () => {
+          await this.plugin.activateAskAdoraView();
+        }),
+      );
+
     containerEl.createEl("h3", { text: "Folders" });
 
     new Setting(containerEl)
