@@ -2,6 +2,7 @@ import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type GranolaAdoraPlugin from "./main";
 import { FigmaClient } from "./figma";
 import { LinearClient } from "./linear";
+import { Linker, formatLinkResult } from "./linker";
 
 export class GranolaAdoraSettingTab extends PluginSettingTab {
   plugin: GranolaAdoraPlugin;
@@ -435,6 +436,28 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("h3", { text: "Advanced" });
+
+    new Setting(containerEl)
+      .setName("Re-link all notes")
+      .setDesc(
+        "Scan meetings, issues, and designs and add cross-references based on keyword overlap.",
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Re-link").onClick(async () => {
+          btn.setButtonText("Linking...");
+          btn.setDisabled(true);
+          try {
+            const linker = new Linker(this.app, () => this.plugin.settings);
+            const result = await linker.runFullLinkingPass();
+            new Notice(formatLinkResult(result));
+          } catch {
+            new Notice("Linking failed.");
+          } finally {
+            btn.setButtonText("Re-link");
+            btn.setDisabled(false);
+          }
+        }),
+      );
 
     new Setting(containerEl)
       .setName("Reset sync state")
