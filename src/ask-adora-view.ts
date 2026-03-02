@@ -1,4 +1,11 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import {
+  ItemView,
+  MarkdownRenderer,
+  Notice,
+  TFile,
+  WorkspaceLeaf,
+  setIcon,
+} from "obsidian";
 import type GranolaAdoraPlugin from "./main";
 import { AskAdoraMessage } from "./types";
 
@@ -9,6 +16,10 @@ export class AskAdoraView extends ItemView {
   private messages: AskAdoraMessage[] = [];
   private isSending = false;
   private currentConversationPath: string | null = null;
+  private messagesEl: HTMLElement | null = null;
+  private textareaEl: HTMLTextAreaElement | null = null;
+  private sendBtnEl: HTMLButtonElement | null = null;
+  private sessionPillEl: HTMLElement | null = null;
 
   private includeActiveNote = true;
   private includeRecentMeetings = true;
@@ -40,48 +51,90 @@ export class AskAdoraView extends ItemView {
     this.contentEl.empty();
   }
 
+  focusInput(): void {
+    this.textareaEl?.focus();
+  }
+
+  async sendFromCommand(): Promise<void> {
+    if (!this.textareaEl) {
+      this.render();
+    }
+    if (!this.textareaEl) {
+      return;
+    }
+    if (!this.textareaEl.value.trim()) {
+      this.textareaEl.focus();
+      new Notice("Type a question in Ask Adora, then send.");
+      return;
+    }
+    await this.sendMessage();
+  }
+
+  clearConversationFromCommand(): void {
+    this.clearConversation(true);
+  }
+
+  async saveConversationFromCommand(): Promise<void> {
+    await this.saveConversation(false);
+    this.refreshSessionPill();
+  }
+
+  startNewConversationFromCommand(): void {
+    this.clearConversation(false);
+    this.currentConversationPath = null;
+    this.refreshSessionPill();
+    new Notice("Started a new Ask Adora conversation.");
+  }
+
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
+    contentEl.addClass("ask-adora-root");
 
-    contentEl.createEl("h2", { text: "Ask Adora" });
-    contentEl.createEl("p", {
-      text: "Ask anything about meetings, customers, product asks, and synced context.",
+    const headerEl = contentEl.createDiv({ cls: "ask-adora-header" });
+    const titleWrap = headerEl.createDiv({ cls: "ask-adora-title-wrap" });
+    const iconEl = titleWrap.createSpan();
+    setIcon(iconEl, "message-square");
+    const titleBlock = titleWrap.createDiv();
+    titleBlock.createEl("h2", { text: "Ask Adora", cls: "ask-adora-title" });
+    titleBlock.createEl("p", {
+      cls: "ask-adora-subtitle",
+      text: "Ask about meetings, customer asks, and synced context.",
     });
-    const sessionEl = contentEl.createEl("p", {
-      text: this.currentConversationPath
-        ? `Conversation: ${this.currentConversationPath}`
-        : "Conversation: unsaved",
-    });
+    this.sessionPillEl = headerEl.createSpan({ cls: "ask-adora-session-pill" });
+    this.refreshSessionPill();
 
-    const controls = contentEl.createDiv({ cls: "ask-adora-controls" });
+    const contextDetails = contentEl.createEl("details", { cls: "ask-adora-context" });
+    const contextSummary = contextDetails.createEl("summary");
+    contextSummary.setText("Context settings");
+    const controls = contextDetails.createDiv({ cls: "ask-adora-context-grid" });
 
-    const activeWrap = controls.createEl("label");
+    const activeWrap = controls.createEl("label", { cls: "ask-adora-context-option" });
     const activeCb = activeWrap.createEl("input", { type: "checkbox" });
     activeCb.checked = this.includeActiveNote;
     activeCb.addEventListener("change", () => {
       this.includeActiveNote = activeCb.checked;
     });
-    activeWrap.appendText(" Include active note");
+    activeWrap.appendText("Include active note");
 
-    const meetingsWrap = controls.createEl("label");
+    const meetingsWrap = controls.createEl("label", { cls: "ask-adora-context-option" });
     const meetingsCb = meetingsWrap.createEl("input", { type: "checkbox" });
     meetingsCb.checked = this.includeRecentMeetings;
     meetingsCb.addEventListener("change", () => {
       this.includeRecentMeetings = meetingsCb.checked;
     });
-    meetingsWrap.appendText(" Include recent meetings");
+    meetingsWrap.appendText("Include recent meetings");
 
-    const digestsWrap = controls.createEl("label");
+    const digestsWrap = controls.createEl("label", { cls: "ask-adora-context-option" });
     const digestsCb = digestsWrap.createEl("input", { type: "checkbox" });
     digestsCb.checked = this.includeRecentDigests;
     digestsCb.addEventListener("change", () => {
       this.includeRecentDigests = digestsCb.checked;
     });
-    digestsWrap.appendText(" Include recent digests");
+    digestsWrap.appendText("Include recent digests");
 
-    const countRow = controls.createDiv();
-    countRow.createEl("span", { text: "Recent meetings to include: " });
+    const countRow = controls.createDiv({ cls: "ask-adora-context-count" });
+    countRow.createEl("span", { text: "Recent meetings:" });
     const countInput = countRow.createEl("input", { type: "number" });
     countInput.value = String(this.recentMeetingCount);
     countInput.min = "1";
@@ -93,109 +146,169 @@ export class AskAdoraView extends ItemView {
       }
     });
 
-    const messagesEl = contentEl.createDiv({ cls: "ask-adora-messages" });
-    this.renderMessages(messagesEl);
+    this.messagesEl = contentEl.createDiv({ cls: "ask-adora-messages" });
+    void this.renderMessages();
 
-    const inputArea = contentEl.createDiv({ cls: "ask-adora-input-area" });
-    const textarea = inputArea.createEl("textarea");
-    textarea.placeholder = "Ask Adora anything...";
-    textarea.rows = 5;
-    textarea.style.width = "100%";
+    const inputArea = contentEl.createDiv({ cls: "ask-adora-input-wrap" });
+    this.textareaEl = inputArea.createEl("textarea", { cls: "ask-adora-input" });
+    this.textareaEl.placeholder = "Ask Adora anything...";
+    this.textareaEl.rows = 1;
 
-    const actions = inputArea.createDiv({ cls: "ask-adora-actions" });
-    const sendBtn = actions.createEl("button", { text: "Send" });
-    sendBtn.addEventListener("click", async () => {
-      await this.sendMessage(textarea, messagesEl, sendBtn);
+    this.sendBtnEl = inputArea.createEl("button", {
+      cls: "ask-adora-btn ask-adora-btn-primary",
+      text: "Send",
+    });
+    this.sendBtnEl.addEventListener("click", async () => {
+      await this.sendMessage();
     });
 
-    const clearBtn = actions.createEl("button", { text: "Clear chat" });
+    const toolbar = inputArea.createDiv({ cls: "ask-adora-toolbar" });
+    toolbar.appendChild(this.sendBtnEl);
+
+    const rightActions = toolbar.createDiv({ cls: "ask-adora-toolbar-right" });
+    const clearBtn = rightActions.createEl("button", {
+      cls: "ask-adora-btn",
+      text: "Clear",
+    });
+    clearBtn.setAttr("aria-label", "Clear current chat");
     clearBtn.addEventListener("click", () => {
-      this.messages = [];
-      this.renderMessages(messagesEl);
-      new Notice("Ask Adora chat cleared.");
+      this.clearConversation(true);
     });
 
-    const saveBtn = actions.createEl("button", { text: "Save chat" });
-    saveBtn.addEventListener("click", async () => {
-      await this.saveConversation(false);
-      sessionEl.setText(
-        this.currentConversationPath
-          ? `Conversation: ${this.currentConversationPath}`
-          : "Conversation: unsaved",
-      );
+    const saveBtn = rightActions.createEl("button", {
+      cls: "ask-adora-btn",
+      text: "Save",
+    });
+    saveBtn.setAttr("aria-label", "Save chat (Shift+click: save as new)");
+    saveBtn.addEventListener("click", async (evt: MouseEvent) => {
+      const saveAsNew = evt.shiftKey;
+      await this.saveConversation(saveAsNew);
+      this.refreshSessionPill();
     });
 
-    const saveAsNewBtn = actions.createEl("button", { text: "Save as new" });
-    saveAsNewBtn.addEventListener("click", async () => {
-      await this.saveConversation(true);
-      sessionEl.setText(
-        this.currentConversationPath
-          ? `Conversation: ${this.currentConversationPath}`
-          : "Conversation: unsaved",
-      );
+    const loadLatestBtn = rightActions.createEl("button", {
+      cls: "ask-adora-btn",
+      text: "Load latest",
     });
-
-    const loadLatestBtn = actions.createEl("button", { text: "Load latest" });
+    loadLatestBtn.setAttr("aria-label", "Load latest saved conversation");
     loadLatestBtn.addEventListener("click", async () => {
       await this.loadLatestConversation();
-      this.renderMessages(messagesEl);
-      sessionEl.setText(
-        this.currentConversationPath
-          ? `Conversation: ${this.currentConversationPath}`
-          : "Conversation: unsaved",
-      );
+      this.refreshSessionPill();
+      void this.renderMessages();
     });
 
-    const loadActiveBtn = actions.createEl("button", { text: "Load active file" });
+    const loadActiveBtn = rightActions.createEl("button", {
+      cls: "ask-adora-btn",
+      text: "Load active",
+    });
+    loadActiveBtn.setAttr("aria-label", "Load conversation from active file");
     loadActiveBtn.addEventListener("click", async () => {
       await this.loadConversationFromActiveFile();
-      this.renderMessages(messagesEl);
-      sessionEl.setText(
-        this.currentConversationPath
-          ? `Conversation: ${this.currentConversationPath}`
-          : "Conversation: unsaved",
-      );
+      this.refreshSessionPill();
+      void this.renderMessages();
     });
 
-    textarea.addEventListener("keydown", async (evt) => {
+    const autosize = (): void => {
+      if (!this.textareaEl) return;
+      this.textareaEl.style.height = "auto";
+      this.textareaEl.style.height = `${Math.min(this.textareaEl.scrollHeight, 150)}px`;
+    };
+    this.textareaEl.addEventListener("input", autosize);
+    autosize();
+
+    this.textareaEl.addEventListener("keydown", async (evt) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
-        await this.sendMessage(textarea, messagesEl, sendBtn);
+        await this.sendMessage();
       }
     });
+
+    this.textareaEl.focus();
   }
 
-  private renderMessages(messagesEl: HTMLElement): void {
-    messagesEl.empty();
-    for (const msg of this.messages) {
-      const bubble = messagesEl.createDiv({
-        cls: `ask-adora-message ask-adora-${msg.role}`,
+  private refreshSessionPill(): void {
+    if (!this.sessionPillEl) {
+      return;
+    }
+    if (this.currentConversationPath) {
+      const basename = this.currentConversationPath.split("/").pop() ?? "saved";
+      this.sessionPillEl.setText(`Saved: ${basename}`);
+      this.sessionPillEl.addClass("ask-adora-status-saved");
+    } else {
+      this.sessionPillEl.setText("Unsaved conversation");
+      this.sessionPillEl.removeClass("ask-adora-status-saved");
+    }
+  }
+
+  private async renderMessages(): Promise<void> {
+    if (!this.messagesEl) {
+      return;
+    }
+    this.messagesEl.empty();
+
+    if (this.messages.length === 0 && !this.isSending) {
+      this.messagesEl.createDiv({
+        cls: "ask-adora-empty",
+        text: "Ask Adora a question to start the conversation.",
       });
-      bubble.createEl("strong", {
+      return;
+    }
+
+    for (const msg of this.messages) {
+      const row = this.messagesEl.createDiv({
+        cls: `ask-adora-message-row ask-adora-message-row-${msg.role === "user" ? "user" : "assistant"}`,
+      });
+      const bubble = row.createDiv({
+        cls: `ask-adora-message ask-adora-message-${msg.role === "user" ? "user" : "assistant"}`,
+      });
+      bubble.createDiv({
+        cls: "ask-adora-message-role",
         text: msg.role === "user" ? "You" : "Adora",
       });
-      bubble.createEl("p", { text: msg.content });
+      const messageContent = bubble.createDiv({ cls: "ask-adora-message-content" });
+      await MarkdownRenderer.render(this.app, msg.content, messageContent, "", this);
     }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    if (this.isSending) {
+      const row = this.messagesEl.createDiv({
+        cls: "ask-adora-message-row ask-adora-message-row-assistant",
+      });
+      const typing = row.createDiv({ cls: "ask-adora-typing" });
+      typing.createEl("span", { text: "Adora is thinking" });
+      typing.createDiv({ cls: "ask-adora-typing-dot" });
+      typing.createDiv({ cls: "ask-adora-typing-dot" });
+      typing.createDiv({ cls: "ask-adora-typing-dot" });
+    }
+
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
-  private async sendMessage(
-    textarea: HTMLTextAreaElement,
-    messagesEl: HTMLElement,
-    sendBtn: HTMLButtonElement,
-  ): Promise<void> {
-    const text = textarea.value.trim();
+  private clearConversation(notify: boolean): void {
+    this.messages = [];
+    void this.renderMessages();
+    if (notify) {
+      new Notice("Ask Adora chat cleared.");
+    }
+  }
+
+  private async sendMessage(): Promise<void> {
+    const text = this.textareaEl?.value.trim() ?? "";
     if (!text || this.isSending) {
       return;
     }
 
     this.isSending = true;
-    sendBtn.disabled = true;
-    sendBtn.textContent = "Sending...";
+    if (this.sendBtnEl) {
+      this.sendBtnEl.disabled = true;
+      this.sendBtnEl.textContent = "Sending...";
+    }
 
     this.messages.push({ role: "user", content: text });
-    textarea.value = "";
-    this.renderMessages(messagesEl);
+    if (this.textareaEl) {
+      this.textareaEl.value = "";
+      this.textareaEl.style.height = "auto";
+    }
+    await this.renderMessages();
 
     try {
       const context = await this.plugin.buildAskAdoraContext({
@@ -214,9 +327,11 @@ export class AskAdoraView extends ItemView {
       });
     } finally {
       this.isSending = false;
-      sendBtn.disabled = false;
-      sendBtn.textContent = "Send";
-      this.renderMessages(messagesEl);
+      if (this.sendBtnEl) {
+        this.sendBtnEl.disabled = false;
+        this.sendBtnEl.textContent = "Send";
+      }
+      await this.renderMessages();
     }
   }
 

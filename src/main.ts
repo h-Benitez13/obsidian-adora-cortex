@@ -75,6 +75,26 @@ export default class GranolaAdoraPlugin extends Plugin {
       name: "Open Ask Adora chat panel",
       callback: () => this.activateAskAdoraView(),
     });
+    this.addCommand({
+      id: "granola-ask-adora-send",
+      name: "Ask Adora: Send message",
+      callback: () => this.sendAskAdoraMessage(),
+    });
+    this.addCommand({
+      id: "granola-ask-adora-clear",
+      name: "Ask Adora: Clear conversation",
+      callback: () => this.clearAskAdoraConversation(),
+    });
+    this.addCommand({
+      id: "granola-ask-adora-save",
+      name: "Ask Adora: Save conversation",
+      callback: () => this.saveAskAdoraConversation(),
+    });
+    this.addCommand({
+      id: "granola-ask-adora-new",
+      name: "Ask Adora: Start new conversation",
+      callback: () => this.startAskAdoraConversation(),
+    });
 
     this.addCommand({
       id: "granola-create-idea",
@@ -527,6 +547,48 @@ export default class GranolaAdoraPlugin extends Plugin {
     if (leaf) {
       workspace.revealLeaf(leaf);
     }
+  }
+
+  private async getAskAdoraView(): Promise<AskAdoraView | null> {
+    await this.activateAskAdoraView();
+    const leaves = this.app.workspace.getLeavesOfType(ASK_ADORA_VIEW_TYPE);
+    if (leaves.length === 0) {
+      new Notice("Could not find Ask Adora panel.");
+      return null;
+    }
+
+    const view = leaves[0].view;
+    if (view instanceof AskAdoraView) {
+      return view;
+    }
+
+    new Notice("Ask Adora view is not ready yet. Try again.");
+    return null;
+  }
+
+  async sendAskAdoraMessage(): Promise<void> {
+    const view = await this.getAskAdoraView();
+    if (!view) return;
+    await view.sendFromCommand();
+  }
+
+  async clearAskAdoraConversation(): Promise<void> {
+    const view = await this.getAskAdoraView();
+    if (!view) return;
+    view.clearConversationFromCommand();
+  }
+
+  async saveAskAdoraConversation(): Promise<void> {
+    const view = await this.getAskAdoraView();
+    if (!view) return;
+    await view.saveConversationFromCommand();
+  }
+
+  async startAskAdoraConversation(): Promise<void> {
+    const view = await this.getAskAdoraView();
+    if (!view) return;
+    view.startNewConversationFromCommand();
+    view.focusInput();
   }
 
   async askAdora(messages: AskAdoraMessage[], context: string): Promise<string> {

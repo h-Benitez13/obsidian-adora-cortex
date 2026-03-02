@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "deploy": "npm run build && PLUGIN_DIR=\"${OBSIDIAN_PLUGIN_DIR:-$HOME/Desktop/Adora AI/.obsidian/plugins/granola-adora}\" && cp main.js manifest.json styles.css \"$PLUGIN_DIR\""
   },
   "keywords": [
     "obsidian",
