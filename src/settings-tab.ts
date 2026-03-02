@@ -3,6 +3,7 @@ import type GranolaAdoraPlugin from "./main";
 import { FigmaClient } from "./figma";
 import { GoogleDriveClient } from "./gdrive";
 import { GitHubClient } from "./github";
+import { HubSpotClient } from "./hubspot";
 import { LinearClient } from "./linear";
 import { SlackClient } from "./slack";
 import { Linker, formatLinkResult } from "./linker";
@@ -429,6 +430,85 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.githubFolderName)
         .onChange(async (value) => {
           this.plugin.settings.githubFolderName = value.trim() || "GitHub";
+          await this.plugin.savePluginSettings();
+        }),
+    );
+
+    containerEl.createEl("h3", { text: "HubSpot" });
+
+    new Setting(containerEl)
+      .setName("Sync from HubSpot")
+      .setDesc("Import contacts, companies, deals, meetings, and tickets.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.syncHubspot)
+          .onChange(async (value) => {
+            this.plugin.settings.syncHubspot = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("HubSpot access token")
+      .setDesc(
+        "Private App token from HubSpot Settings → Integrations → Private Apps.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("pat-na1-...")
+          .setValue(this.plugin.settings.hubspotAccessToken)
+          .then((t) => {
+            t.inputEl.type = "password";
+            t.inputEl.style.width = "100%";
+          })
+          .onChange(async (value) => {
+            this.plugin.settings.hubspotAccessToken = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    const hubspotStatusSetting = new Setting(containerEl)
+      .setName("Test HubSpot connection")
+      .setDesc("Verify your HubSpot token works.");
+
+    hubspotStatusSetting.addButton((btn) =>
+      btn.setButtonText("Test").onClick(async () => {
+        const token = this.plugin.settings.hubspotAccessToken;
+        if (!token) {
+          new Notice("HubSpot: Enter an access token first.");
+          return;
+        }
+        btn.setButtonText("Testing...");
+        btn.setDisabled(true);
+        try {
+          const client = new HubSpotClient(token);
+          const ok = await client.testConnection();
+          if (ok) {
+            new Notice("HubSpot: Connection successful!");
+            hubspotStatusSetting.setDesc("Connected ✓");
+          } else {
+            new Notice("HubSpot: Connection failed. Check your token/scopes.");
+            hubspotStatusSetting.setDesc(
+              "Connection failed — check token and Private App scopes.",
+            );
+          }
+        } catch {
+          new Notice("HubSpot: Connection failed.");
+          hubspotStatusSetting.setDesc(
+            "Connection failed — check token and Private App scopes.",
+          );
+        } finally {
+          btn.setButtonText("Test");
+          btn.setDisabled(false);
+        }
+      }),
+    );
+
+    new Setting(containerEl).setName("HubSpot folder").addText((text) =>
+      text
+        .setValue(this.plugin.settings.hubspotFolderName)
+        .onChange(async (value) => {
+          this.plugin.settings.hubspotFolderName = value.trim() || "HubSpot";
           await this.plugin.savePluginSettings();
         }),
     );

@@ -203,6 +203,78 @@ export interface GoogleDriveFile {
   webViewLink: string;
 }
 
+// ── HubSpot types ──
+
+export interface HubSpotContact {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  fullName: string | null;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  jobTitle: string | null;
+  lifecycleStage: string | null;
+  leadStatus: string | null;
+  associatedCompanyIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface HubSpotCompany {
+  id: string;
+  name: string;
+  domain: string | null;
+  industry: string | null;
+  numberOfEmployees: string | null;
+  annualRevenue: string | null;
+  lifecycleStage: string | null;
+  leadStatus: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface HubSpotDeal {
+  id: string;
+  name: string;
+  stage: string | null;
+  amount: string | null;
+  closeDate: string | null;
+  pipeline: string | null;
+  ownerId: string | null;
+  associatedCompanyIds: string[];
+  associatedContactIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface HubSpotMeeting {
+  id: string;
+  title: string;
+  startTime: string | null;
+  endTime: string | null;
+  body: string | null;
+  outcome: string | null;
+  associatedContactIds: string[];
+  associatedCompanyIds: string[];
+  associatedDealIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface HubSpotTicket {
+  id: string;
+  subject: string;
+  content: string | null;
+  priority: string | null;
+  pipelineStage: string | null;
+  associatedContactIds: string[];
+  associatedCompanyIds: string[];
+  associatedDealIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 export interface AskAdoraMessage {
   role: "user" | "assistant";
   content: string;
@@ -290,6 +362,9 @@ export interface GranolaAdoraSettings {
   googleDriveAccessToken: string;
   googleDriveFolderId: string;
   googleDriveFolderName: string;
+  syncHubspot: boolean;
+  hubspotAccessToken: string;
+  hubspotFolderName: string;
   healthScoreEnabled: boolean;
   decisionsFolderName: string;
   releaseNotesFolderName: string;
@@ -329,6 +404,8 @@ export interface TeamConfigTemplate {
   syncGoogleDrive: boolean;
   googleDriveFolderId: string;
   googleDriveFolderName: string;
+  syncHubspot: boolean;
+  hubspotFolderName: string;
   healthScoreEnabled: boolean;
   decisionsFolderName: string;
   releaseNotesFolderName: string;
@@ -389,6 +466,9 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   googleDriveAccessToken: "",
   googleDriveFolderId: "",
   googleDriveFolderName: "Google Drive",
+  syncHubspot: false,
+  hubspotAccessToken: "",
+  hubspotFolderName: "HubSpot",
   healthScoreEnabled: false,
   decisionsFolderName: "Decisions",
   releaseNotesFolderName: "Releases",
@@ -403,6 +483,11 @@ export interface SyncResult {
   errors: string[];
   slackMessages: number;
   githubPRs: number;
+  hubspotContacts: number;
+  hubspotCompanies: number;
+  hubspotDeals: number;
+  hubspotMeetings: number;
+  hubspotTickets: number;
 }
 
 export interface ExtractedTags {

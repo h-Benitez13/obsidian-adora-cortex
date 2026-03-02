@@ -312,6 +312,8 @@ export default class GranolaAdoraPlugin extends Plugin {
       syncGoogleDrive: this.settings.syncGoogleDrive,
       googleDriveFolderId: this.settings.googleDriveFolderId,
       googleDriveFolderName: this.settings.googleDriveFolderName,
+      syncHubspot: this.settings.syncHubspot,
+      hubspotFolderName: this.settings.hubspotFolderName,
       healthScoreEnabled: this.settings.healthScoreEnabled,
       decisionsFolderName: this.settings.decisionsFolderName,
       releaseNotesFolderName: this.settings.releaseNotesFolderName,
@@ -441,6 +443,9 @@ export default class GranolaAdoraPlugin extends Plugin {
         missing.push("Google Drive OAuth credentials");
       }
     }
+    if (this.settings.syncHubspot && !this.settings.hubspotAccessToken) {
+      missing.push("HubSpot access token");
+    }
     if (this.settings.aiEnabled && !this.settings.claudeApiKey) {
       missing.push("Claude API key");
     }
@@ -489,6 +494,8 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("syncGoogleDrive");
     apply("googleDriveFolderId");
     apply("googleDriveFolderName");
+    apply("syncHubspot");
+    apply("hubspotFolderName");
     apply("healthScoreEnabled");
     apply("decisionsFolderName");
     apply("releaseNotesFolderName");
@@ -1182,6 +1189,33 @@ export default class GranolaAdoraPlugin extends Plugin {
 
     const meetingFiles = this.getMeetingFiles();
     const issueFiles = this.getIssueFiles();
+    const hubspotDeals = settings.syncHubspot
+      ? this.app.vault
+          .getMarkdownFiles()
+          .filter((f) =>
+            f.path.startsWith(
+              `${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals/`,
+            ),
+          )
+      : [];
+    const hubspotTickets = settings.syncHubspot
+      ? this.app.vault
+          .getMarkdownFiles()
+          .filter((f) =>
+            f.path.startsWith(
+              `${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets/`,
+            ),
+          )
+      : [];
+    const hubspotCompanies = settings.syncHubspot
+      ? this.app.vault
+          .getMarkdownFiles()
+          .filter((f) =>
+            f.path.startsWith(
+              `${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies/`,
+            ),
+          )
+      : [];
 
     let ai: AICortex | null = null;
     if (settings.aiEnabled && settings.claudeApiKey) {
@@ -1222,6 +1256,19 @@ export default class GranolaAdoraPlugin extends Plugin {
           meetingFiles,
           issueFiles,
           sentimentScore,
+          {
+            openDeals: hubspotDeals.filter((f) =>
+              f.basename.toLowerCase().includes(customerName.toLowerCase()),
+            ).length,
+            ticketCount: hubspotTickets.filter((f) =>
+              f.basename.toLowerCase().includes(customerName.toLowerCase()),
+            ).length,
+            lifecycleStage: hubspotCompanies.find((f) =>
+              f.basename.toLowerCase().includes(customerName.toLowerCase()),
+            )
+              ? "customer"
+              : undefined,
+          },
         );
 
         let content = await this.app.vault.read(customerFile);

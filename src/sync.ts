@@ -4,6 +4,7 @@ import { FigmaClient } from "./figma";
 import { LinearClient } from "./linear";
 import { GitHubClient } from "./github";
 import { GoogleDriveClient } from "./gdrive";
+import { HubSpotClient } from "./hubspot";
 import { SlackClient } from "./slack";
 import { AutoTagger } from "./tagger";
 import {
@@ -25,6 +26,11 @@ import {
   GranolaAdoraSettings,
   GranolaDocument,
   GranolaDocumentList,
+  HubSpotCompany,
+  HubSpotContact,
+  HubSpotDeal,
+  HubSpotMeeting,
+  HubSpotTicket,
   LinearIssue,
   LinearProject,
   SlackMessage,
@@ -66,6 +72,11 @@ export class SyncEngine {
       errors: [],
       slackMessages: 0,
       githubPRs: 0,
+      hubspotContacts: 0,
+      hubspotCompanies: 0,
+      hubspotDeals: 0,
+      hubspotMeetings: 0,
+      hubspotTickets: 0,
     };
 
     await this.ensureFolderStructure(settings);
@@ -229,6 +240,25 @@ export class SyncEngine {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         result.errors.push(`Google Drive sync failed: ${message}`);
+      }
+    }
+
+    if (settings.syncHubspot && settings.hubspotAccessToken) {
+      try {
+        const hubspotClient = new HubSpotClient(settings.hubspotAccessToken);
+        const stats = await this.withTimeout(
+          this.syncHubSpotData(hubspotClient),
+          30000,
+          "HubSpot",
+        );
+        result.hubspotContacts = stats.contacts;
+        result.hubspotCompanies = stats.companies;
+        result.hubspotDeals = stats.deals;
+        result.hubspotMeetings = stats.meetings;
+        result.hubspotTickets = stats.tickets;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        result.errors.push(`HubSpot sync failed: ${message}`);
       }
     }
 
@@ -817,6 +847,530 @@ export class SyncEngine {
     return [...fm, ...body].join("\n");
   }
 
+  private async syncHubSpotData(
+    client: HubSpotClient,
+  ): Promise<{
+    contacts: number;
+    companies: number;
+    deals: number;
+    meetings: number;
+    tickets: number;
+  }> {
+    const contacts = await client.fetchContacts();
+    const companies = await client.fetchCompanies();
+    const deals = await client.fetchDeals();
+    const meetings = await client.fetchMeetings();
+    const tickets = await client.fetchTickets();
+
+    const companiesById = new Map<string, HubSpotCompany>();
+    for (const company of companies) {
+      companiesById.set(company.id, company);
+    }
+
+    const contactsById = new Map<string, HubSpotContact>();
+    for (const contact of contacts) {
+      contactsById.set(contact.id, contact);
+    }
+
+    const dealsById = new Map<string, HubSpotDeal>();
+    for (const deal of deals) {
+      dealsById.set(deal.id, deal);
+    }
+
+    return {
+      contacts: await this.syncHubSpotContacts(contacts, companiesById),
+      companies: await this.syncHubSpotCompanies(companies),
+      deals: await this.syncHubSpotDeals(deals, companiesById, contactsById),
+      meetings: await this.syncHubSpotMeetings(
+        meetings,
+        companiesById,
+        contactsById,
+        dealsById,
+      ),
+      tickets: await this.syncHubSpotTickets(
+        tickets,
+        companiesById,
+        contactsById,
+        dealsById,
+      ),
+    };
+  }
+
+  private async syncHubSpotContacts(
+    contacts: HubSpotContact[],
+    companiesById: Map<string, HubSpotCompany>,
+  ): Promise<number> {
+    const settings = this.getSettings();
+    const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Contacts`;
+    await this.ensureFolder(folderPath);
+
+    let count = 0;
+    for (const contact of contacts) {
+      const title = contact.fullName || contact.email || `Contact ${contact.id}`;
+      const fileName = sanitizeFileName(title);
+      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+      const updatedAt = contact.updatedAt ?? contact.createdAt ?? new Date().toISOString();
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const existingUpdated =
+          this.extractFrontmatterField(existingContent, "updated") ?? "";
+        if (existingUpdated >= updatedAt) {
+          continue;
+        }
+      }
+
+      const associatedCompanies = contact.associatedCompanyIds
+        .map((id) => companiesById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const content = this.renderHubSpotContactNote(contact, associatedCompanies);
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, content);
+      } else {
+        await this.app.vault.create(filePath, content);
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private async syncHubSpotCompanies(companies: HubSpotCompany[]): Promise<number> {
+    const settings = this.getSettings();
+    const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies`;
+    await this.ensureFolder(folderPath);
+
+    let count = 0;
+    for (const company of companies) {
+      const fileName = sanitizeFileName(company.name || `Company ${company.id}`);
+      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+      const updatedAt = company.updatedAt ?? company.createdAt ?? new Date().toISOString();
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const existingUpdated =
+          this.extractFrontmatterField(existingContent, "updated") ?? "";
+        if (existingUpdated >= updatedAt) {
+          continue;
+        }
+      }
+
+      const content = this.renderHubSpotCompanyNote(company);
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, content);
+      } else {
+        await this.app.vault.create(filePath, content);
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private async syncHubSpotDeals(
+    deals: HubSpotDeal[],
+    companiesById: Map<string, HubSpotCompany>,
+    contactsById: Map<string, HubSpotContact>,
+  ): Promise<number> {
+    const settings = this.getSettings();
+    const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals`;
+    await this.ensureFolder(folderPath);
+
+    let count = 0;
+    for (const deal of deals) {
+      const fileName = sanitizeFileName(deal.name || `Deal ${deal.id}`);
+      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+      const updatedAt = deal.updatedAt ?? deal.createdAt ?? new Date().toISOString();
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const existingUpdated =
+          this.extractFrontmatterField(existingContent, "updated") ?? "";
+        if (existingUpdated >= updatedAt) {
+          continue;
+        }
+      }
+
+      const companyNames = deal.associatedCompanyIds
+        .map((id) => companiesById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const contactNames = deal.associatedContactIds
+        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .filter((name): name is string => Boolean(name));
+      const content = this.renderHubSpotDealNote(deal, companyNames, contactNames);
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, content);
+      } else {
+        await this.app.vault.create(filePath, content);
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private async syncHubSpotMeetings(
+    meetings: HubSpotMeeting[],
+    companiesById: Map<string, HubSpotCompany>,
+    contactsById: Map<string, HubSpotContact>,
+    dealsById: Map<string, HubSpotDeal>,
+  ): Promise<number> {
+    const settings = this.getSettings();
+    const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Meetings`;
+    await this.ensureFolder(folderPath);
+
+    let count = 0;
+    for (const meeting of meetings) {
+      const fileName = sanitizeFileName(meeting.title || `Meeting ${meeting.id}`);
+      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+      const updatedAt = meeting.updatedAt ?? meeting.createdAt ?? new Date().toISOString();
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const existingUpdated =
+          this.extractFrontmatterField(existingContent, "updated") ?? "";
+        if (existingUpdated >= updatedAt) {
+          continue;
+        }
+      }
+
+      const companyNames = meeting.associatedCompanyIds
+        .map((id) => companiesById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const contactNames = meeting.associatedContactIds
+        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .filter((name): name is string => Boolean(name));
+      const contactEmails = meeting.associatedContactIds
+        .map((id) => contactsById.get(id)?.email)
+        .filter((email): email is string => Boolean(email));
+      const dealNames = meeting.associatedDealIds
+        .map((id) => dealsById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const content = this.renderHubSpotMeetingNote(
+        meeting,
+        companyNames,
+        contactNames,
+        contactEmails,
+        dealNames,
+      );
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, content);
+      } else {
+        await this.app.vault.create(filePath, content);
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private async syncHubSpotTickets(
+    tickets: HubSpotTicket[],
+    companiesById: Map<string, HubSpotCompany>,
+    contactsById: Map<string, HubSpotContact>,
+    dealsById: Map<string, HubSpotDeal>,
+  ): Promise<number> {
+    const settings = this.getSettings();
+    const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets`;
+    await this.ensureFolder(folderPath);
+
+    let count = 0;
+    for (const ticket of tickets) {
+      const fileName = sanitizeFileName(ticket.subject || `Ticket ${ticket.id}`);
+      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+      const updatedAt = ticket.updatedAt ?? ticket.createdAt ?? new Date().toISOString();
+
+      if (existingFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(existingFile);
+        const existingUpdated =
+          this.extractFrontmatterField(existingContent, "updated") ?? "";
+        if (existingUpdated >= updatedAt) {
+          continue;
+        }
+      }
+
+      const companyNames = ticket.associatedCompanyIds
+        .map((id) => companiesById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const contactNames = ticket.associatedContactIds
+        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .filter((name): name is string => Boolean(name));
+      const dealNames = ticket.associatedDealIds
+        .map((id) => dealsById.get(id)?.name)
+        .filter((name): name is string => Boolean(name));
+      const content = this.renderHubSpotTicketNote(
+        ticket,
+        companyNames,
+        contactNames,
+        dealNames,
+      );
+      if (existingFile instanceof TFile) {
+        await this.app.vault.modify(existingFile, content);
+      } else {
+        await this.app.vault.create(filePath, content);
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private renderHubSpotContactNote(
+    contact: HubSpotContact,
+    associatedCompanies: string[],
+  ): string {
+    const now = new Date().toISOString();
+    const fm = [
+      "---",
+      `type: "hubspot-contact"`,
+      `hubspot_contact_id: "${escapeYaml(contact.id)}"`,
+      `title: "${escapeYaml(contact.fullName || contact.email || `Contact ${contact.id}`)}"`,
+      `email: "${escapeYaml(contact.email ?? "")}"`,
+      `company: "${escapeYaml(contact.company ?? "")}"`,
+      `job_title: "${escapeYaml(contact.jobTitle ?? "")}"`,
+      `lifecycle_stage: "${escapeYaml(contact.lifecycleStage ?? "")}"`,
+      `lead_status: "${escapeYaml(contact.leadStatus ?? "")}"`,
+      `updated: "${contact.updatedAt ?? now}"`,
+      `synced: "${now}"`,
+    ];
+    if (associatedCompanies.length > 0) {
+      fm.push("associated_companies:");
+      for (const name of associatedCompanies) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    fm.push(`tags:`);
+    fm.push(`  - "hubspot"`);
+    fm.push(`  - "hubspot/contact"`);
+    fm.push("---");
+
+    const body = [
+      "",
+      `# ${contact.fullName || contact.email || `Contact ${contact.id}`}`,
+      "",
+      contact.phone ? `- Phone: ${contact.phone}` : "",
+      associatedCompanies.length > 0
+        ? `- Associated companies: ${associatedCompanies.join(", ")}`
+        : "",
+      "",
+    ].filter((line) => line !== "");
+
+    return [...fm, ...body].join("\n");
+  }
+
+  private renderHubSpotCompanyNote(company: HubSpotCompany): string {
+    const now = new Date().toISOString();
+    const fm = [
+      "---",
+      `type: "hubspot-company"`,
+      `hubspot_company_id: "${escapeYaml(company.id)}"`,
+      `company: "${escapeYaml(company.name)}"`,
+      `domain: "${escapeYaml(company.domain ?? "")}"`,
+      `industry: "${escapeYaml(company.industry ?? "")}"`,
+      `lifecycle_stage: "${escapeYaml(company.lifecycleStage ?? "")}"`,
+      `lead_status: "${escapeYaml(company.leadStatus ?? "")}"`,
+      `updated: "${company.updatedAt ?? now}"`,
+      `synced: "${now}"`,
+      `tags:`,
+      `  - "hubspot"`,
+      `  - "hubspot/company"`,
+      "---",
+      "",
+      `# ${company.name}`,
+      "",
+    ];
+    if (company.numberOfEmployees) {
+      fm.push(`- Employees: ${company.numberOfEmployees}`);
+    }
+    if (company.annualRevenue) {
+      fm.push(`- Annual Revenue: ${company.annualRevenue}`);
+    }
+    fm.push("");
+    return fm.join("\n");
+  }
+
+  private renderHubSpotDealNote(
+    deal: HubSpotDeal,
+    companyNames: string[],
+    contactNames: string[],
+  ): string {
+    const now = new Date().toISOString();
+    const fm = [
+      "---",
+      `type: "hubspot-deal"`,
+      `hubspot_deal_id: "${escapeYaml(deal.id)}"`,
+      `deal_name: "${escapeYaml(deal.name)}"`,
+      `deal_stage: "${escapeYaml(deal.stage ?? "")}"`,
+      `amount: "${escapeYaml(deal.amount ?? "")}"`,
+      `close_date: "${escapeYaml(deal.closeDate ?? "")}"`,
+      `pipeline: "${escapeYaml(deal.pipeline ?? "")}"`,
+      `updated: "${deal.updatedAt ?? now}"`,
+      `synced: "${now}"`,
+    ];
+    if (companyNames.length > 0) {
+      fm.push("related_companies:");
+      for (const name of companyNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    if (contactNames.length > 0) {
+      fm.push("related_contacts:");
+      for (const name of contactNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    fm.push(`tags:`);
+    fm.push(`  - "hubspot"`);
+    fm.push(`  - "hubspot/deal"`);
+    fm.push("---");
+
+    const body = [
+      "",
+      `# ${deal.name}`,
+      "",
+      deal.stage ? `- Stage: ${deal.stage}` : "",
+      deal.amount ? `- Amount: ${deal.amount}` : "",
+      deal.closeDate ? `- Close date: ${deal.closeDate}` : "",
+      companyNames.length > 0 ? `- Companies: ${companyNames.join(", ")}` : "",
+      contactNames.length > 0 ? `- Contacts: ${contactNames.join(", ")}` : "",
+      "",
+    ].filter((line) => line !== "");
+
+    return [...fm, ...body].join("\n");
+  }
+
+  private renderHubSpotMeetingNote(
+    meeting: HubSpotMeeting,
+    companyNames: string[],
+    contactNames: string[],
+    contactEmails: string[],
+    dealNames: string[],
+  ): string {
+    const now = new Date().toISOString();
+    const fm = [
+      "---",
+      `type: "hubspot-meeting"`,
+      `hubspot_meeting_id: "${escapeYaml(meeting.id)}"`,
+      `title: "${escapeYaml(meeting.title)}"`,
+      `start_time: "${escapeYaml(meeting.startTime ?? "")}"`,
+      `end_time: "${escapeYaml(meeting.endTime ?? "")}"`,
+      `outcome: "${escapeYaml(meeting.outcome ?? "")}"`,
+      `updated: "${meeting.updatedAt ?? now}"`,
+      `synced: "${now}"`,
+    ];
+    if (companyNames.length > 0) {
+      fm.push("related_companies:");
+      for (const name of companyNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    if (contactNames.length > 0) {
+      fm.push("related_contacts:");
+      for (const name of contactNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    if (contactEmails.length > 0) {
+      fm.push("contact_emails:");
+      for (const email of contactEmails) {
+        fm.push(`  - "${escapeYaml(email)}"`);
+      }
+    }
+    if (dealNames.length > 0) {
+      fm.push("related_deals:");
+      for (const name of dealNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    fm.push(`tags:`);
+    fm.push(`  - "hubspot"`);
+    fm.push(`  - "hubspot/meeting"`);
+    fm.push("---");
+
+    const body = [
+      "",
+      `# ${meeting.title}`,
+      "",
+      meeting.startTime ? `- Start: ${meeting.startTime}` : "",
+      meeting.endTime ? `- End: ${meeting.endTime}` : "",
+      meeting.outcome ? `- Outcome: ${meeting.outcome}` : "",
+      companyNames.length > 0 ? `- Companies: ${companyNames.join(", ")}` : "",
+      contactNames.length > 0 ? `- Contacts: ${contactNames.join(", ")}` : "",
+      dealNames.length > 0 ? `- Deals: ${dealNames.join(", ")}` : "",
+      "",
+      "## Notes",
+      "",
+      meeting.body?.trim() || "_No notes provided._",
+      "",
+    ].filter((line) => line !== "");
+
+    return [...fm, ...body].join("\n");
+  }
+
+  private renderHubSpotTicketNote(
+    ticket: HubSpotTicket,
+    companyNames: string[],
+    contactNames: string[],
+    dealNames: string[],
+  ): string {
+    const now = new Date().toISOString();
+    const fm = [
+      "---",
+      `type: "hubspot-ticket"`,
+      `hubspot_ticket_id: "${escapeYaml(ticket.id)}"`,
+      `subject: "${escapeYaml(ticket.subject)}"`,
+      `priority: "${escapeYaml(ticket.priority ?? "")}"`,
+      `pipeline_stage: "${escapeYaml(ticket.pipelineStage ?? "")}"`,
+      `updated: "${ticket.updatedAt ?? now}"`,
+      `synced: "${now}"`,
+    ];
+    if (companyNames.length > 0) {
+      fm.push("related_companies:");
+      for (const name of companyNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    if (contactNames.length > 0) {
+      fm.push("related_contacts:");
+      for (const name of contactNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    if (dealNames.length > 0) {
+      fm.push("related_deals:");
+      for (const name of dealNames) {
+        fm.push(`  - "${escapeYaml(name)}"`);
+      }
+    }
+    fm.push(`tags:`);
+    fm.push(`  - "hubspot"`);
+    fm.push(`  - "hubspot/ticket"`);
+    fm.push("---");
+
+    const body = [
+      "",
+      `# ${ticket.subject}`,
+      "",
+      ticket.priority ? `- Priority: ${ticket.priority}` : "",
+      ticket.pipelineStage ? `- Pipeline stage: ${ticket.pipelineStage}` : "",
+      companyNames.length > 0 ? `- Companies: ${companyNames.join(", ")}` : "",
+      contactNames.length > 0 ? `- Contacts: ${contactNames.join(", ")}` : "",
+      dealNames.length > 0 ? `- Deals: ${dealNames.join(", ")}` : "",
+      "",
+      "## Content",
+      "",
+      ticket.content?.trim() || "_No ticket content provided._",
+      "",
+    ].filter((line) => line !== "");
+
+    return [...fm, ...body].join("\n");
+  }
+
   private async syncCustomer360Pages(
     allDocs: GranolaDocument[],
   ): Promise<void> {
@@ -845,6 +1399,36 @@ export class SyncEngine {
             .filter((f) =>
               f.path.startsWith(
                 `${basePath}/${settings.linearFolderName}/Issues/`,
+              ),
+            )
+        : [];
+    const hubspotDeals =
+      settings.healthScoreEnabled && settings.syncHubspot
+        ? this.app.vault
+            .getMarkdownFiles()
+            .filter((f) =>
+              f.path.startsWith(
+                `${basePath}/${settings.hubspotFolderName}/Deals/`,
+              ),
+            )
+        : [];
+    const hubspotTickets =
+      settings.healthScoreEnabled && settings.syncHubspot
+        ? this.app.vault
+            .getMarkdownFiles()
+            .filter((f) =>
+              f.path.startsWith(
+                `${basePath}/${settings.hubspotFolderName}/Tickets/`,
+              ),
+            )
+        : [];
+    const hubspotCompanies =
+      settings.healthScoreEnabled && settings.syncHubspot
+        ? this.app.vault
+            .getMarkdownFiles()
+            .filter((f) =>
+              f.path.startsWith(
+                `${basePath}/${settings.hubspotFolderName}/Companies/`,
               ),
             )
         : [];
@@ -920,6 +1504,19 @@ export class SyncEngine {
           meetingFiles,
           issueFiles,
           sentimentScore,
+          {
+            openDeals: hubspotDeals.filter((f) =>
+              f.basename.toLowerCase().includes(customer.toLowerCase()),
+            ).length,
+            ticketCount: hubspotTickets.filter((f) =>
+              f.basename.toLowerCase().includes(customer.toLowerCase()),
+            ).length,
+            lifecycleStage: hubspotCompanies.find((f) =>
+              f.basename.toLowerCase().includes(customer.toLowerCase()),
+            )
+              ? "customer"
+              : undefined,
+          },
         );
         finalContent = updateHealthScoreInContent(finalContent, health);
       }
@@ -1075,6 +1672,15 @@ export class SyncEngine {
       );
     }
 
+    if (settings.syncHubspot) {
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}`);
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Contacts`);
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies`);
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals`);
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Meetings`);
+      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets`);
+    }
+
     folders.push(`${settings.baseFolderPath}/${settings.decisionsFolderName}`);
     folders.push(
       `${settings.baseFolderPath}/${settings.releaseNotesFolderName}`,
@@ -1166,6 +1772,11 @@ export function formatSyncResult(result: SyncResult): string {
   if (result.created > 0) parts.push(`${result.created} new`);
   if (result.updated > 0) parts.push(`${result.updated} updated`);
   if (result.skipped > 0) parts.push(`${result.skipped} unchanged`);
+  if (result.hubspotContacts > 0) parts.push(`${result.hubspotContacts} HubSpot contacts`);
+  if (result.hubspotCompanies > 0) parts.push(`${result.hubspotCompanies} HubSpot companies`);
+  if (result.hubspotDeals > 0) parts.push(`${result.hubspotDeals} HubSpot deals`);
+  if (result.hubspotMeetings > 0) parts.push(`${result.hubspotMeetings} HubSpot meetings`);
+  if (result.hubspotTickets > 0) parts.push(`${result.hubspotTickets} HubSpot tickets`);
 
   const summary =
     parts.length > 0

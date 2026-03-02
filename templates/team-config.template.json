@@ -37,6 +37,8 @@
   "syncGoogleDrive": false,
   "googleDriveFolderId": "",
   "googleDriveFolderName": "Google Drive",
+  "syncHubspot": false,
+  "hubspotFolderName": "HubSpot",
   "healthScoreEnabled": false,
   "decisionsFolderName": "Decisions",
   "releaseNotesFolderName": "Releases"

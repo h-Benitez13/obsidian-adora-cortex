@@ -84,6 +84,11 @@ export function calculateHealthScore(
   meetings: TFile[],
   issues: TFile[],
   sentimentScore?: number,
+  hubspot?: {
+    openDeals: number;
+    ticketCount: number;
+    lifecycleStage?: string;
+  },
 ): HealthScore {
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const customerLower = customerName.toLowerCase();
@@ -102,10 +107,35 @@ export function calculateHealthScore(
   const issueCount = customerIssues.length;
   const issuesScore = Math.max(0, 100 - issueCount * 10);
 
+  let crmScore = 100;
+  if (hubspot) {
+    crmScore = Math.max(
+      0,
+      100 - hubspot.openDeals * 7 - hubspot.ticketCount * 8,
+    );
+    const lifecycle = (hubspot.lifecycleStage ?? "").toLowerCase();
+    if (lifecycle.includes("customer") || lifecycle.includes("evangelist")) {
+      crmScore = Math.min(100, crmScore + 8);
+    } else if (lifecycle.includes("opportunity")) {
+      crmScore = Math.max(0, crmScore - 5);
+    }
+  }
+
   let score: number;
-  if (sentimentScore !== undefined) {
+  if (sentimentScore !== undefined && hubspot) {
+    score = Math.round(
+      meetingFrequencyScore * 0.25 +
+        issuesScore * 0.25 +
+        sentimentScore * 0.25 +
+        crmScore * 0.25,
+    );
+  } else if (sentimentScore !== undefined) {
     score = Math.round(
       meetingFrequencyScore * 0.33 + issuesScore * 0.33 + sentimentScore * 0.34,
+    );
+  } else if (hubspot) {
+    score = Math.round(
+      meetingFrequencyScore * 0.34 + issuesScore * 0.33 + crmScore * 0.33,
     );
   } else {
     score = Math.round(meetingFrequencyScore * 0.5 + issuesScore * 0.5);

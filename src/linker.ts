@@ -7,6 +7,7 @@ interface LinkResult {
   designsLinked: number;
   slackLinked: number;
   prsLinked: number;
+  hubspotLinked: number;
 }
 
 export class Linker {
@@ -26,6 +27,7 @@ export class Linker {
       designsLinked: 0,
       slackLinked: 0,
       prsLinked: 0,
+      hubspotLinked: 0,
     };
 
     const meetingFiles = this.getFilesInFolder(
@@ -88,6 +90,55 @@ export class Linker {
 
     for (const pr of prFiles) {
       result.prsLinked += await this.linkPRsToIssues(pr, issueFiles);
+    }
+
+    const hubspotContacts = settings.syncHubspot
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.hubspotFolderName}/Contacts`,
+        )
+      : [];
+    const hubspotDeals = settings.syncHubspot
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals`,
+        )
+      : [];
+    const hubspotTickets = settings.syncHubspot
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets`,
+        )
+      : [];
+    const hubspotMeetings = settings.syncHubspot
+      ? this.getFilesInFolder(
+          `${settings.baseFolderPath}/${settings.hubspotFolderName}/Meetings`,
+        )
+      : [];
+
+    for (const contact of hubspotContacts) {
+      result.hubspotLinked += await this.linkHubSpotContactToCustomers(
+        contact,
+        customerFiles,
+      );
+    }
+
+    for (const deal of hubspotDeals) {
+      result.hubspotLinked += await this.linkHubSpotDealToCustomers(
+        deal,
+        customerFiles,
+      );
+    }
+
+    for (const ticket of hubspotTickets) {
+      result.hubspotLinked += await this.linkHubSpotTicketToCustomers(
+        ticket,
+        customerFiles,
+      );
+    }
+
+    for (const meeting of hubspotMeetings) {
+      result.hubspotLinked += await this.linkHubSpotMeetingToGranolaMeetings(
+        meeting,
+        meetingFiles,
+      );
     }
 
     return result;
@@ -393,6 +444,12 @@ export class Linker {
       modified = true;
     }
 
+    if (settings.syncHubspot && !content.includes("## Related HubSpot")) {
+      const hubspotSection = this.buildHubSpotSection(settings);
+      updated = this.insertBeforeUserContent(updated, hubspotSection);
+      modified = true;
+    }
+
     if (modified) {
       await this.app.vault.modify(customerFile, updated);
     }
@@ -444,6 +501,239 @@ export class Linker {
       "SORT timestamp DESC",
       "```\n",
     ].join("\n");
+  }
+
+  private buildHubSpotSection(settings: GranolaAdoraSettings): string {
+    const hubspotPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}`;
+    return [
+      "## Related HubSpot\n",
+      "### Contacts",
+      "```dataview",
+      `TABLE email as "Email", lifecycle_stage as "Lifecycle", lead_status as "Lead Status"`,
+      `FROM "${hubspotPath}/Contacts"`,
+      `WHERE contains(related_customers, this.file.name)`,
+      "SORT updated DESC",
+      "```\n",
+      "### Deals",
+      "```dataview",
+      `TABLE deal_stage as "Stage", amount as "Amount", close_date as "Close Date"`,
+      `FROM "${hubspotPath}/Deals"`,
+      `WHERE contains(related_customers, this.file.name)`,
+      "SORT updated DESC",
+      "```\n",
+      "### Tickets",
+      "```dataview",
+      `TABLE priority as "Priority", pipeline_stage as "Pipeline Stage", updated as "Updated"`,
+      `FROM "${hubspotPath}/Tickets"`,
+      `WHERE contains(related_customers, this.file.name)`,
+      "SORT updated DESC",
+      "```\n",
+    ].join("\n");
+  }
+
+  private async linkHubSpotContactToCustomers(
+    contactFile: TFile,
+    customerFiles: TFile[],
+  ): Promise<number> {
+    const fm = this.app.metadataCache.getFileCache(contactFile)?.frontmatter;
+    if (!fm) return 0;
+
+    const email = String(fm.email ?? "").toLowerCase();
+    const company = String(fm.company ?? "").toLowerCase();
+    const associatedCompanies = this.toStringArray(fm.associated_companies).map(
+      (c) => c.toLowerCase(),
+    );
+    const emailDomain = email.includes("@") ? email.split("@")[1] : "";
+
+    const matchedCustomers = customerFiles
+      .map((file) => file.basename)
+      .filter((customerName) => {
+        const customer = customerName.toLowerCase();
+        const compact = customer.replace(/[^a-z0-9]/g, "");
+        const domainCompact = emailDomain.replace(/[^a-z0-9.]/g, "");
+        return (
+          (company && company.includes(customer)) ||
+          associatedCompanies.some((name) => name.includes(customer)) ||
+          (domainCompact && domainCompact.includes(compact))
+        );
+      });
+
+    if (matchedCustomers.length === 0) return 0;
+
+    let linked = 0;
+    const content = await this.app.vault.read(contactFile);
+    const updatedContact = this.upsertFrontmatterArrays(content, {
+      related_customers: matchedCustomers,
+    });
+    if (updatedContact !== content) {
+      await this.app.vault.modify(contactFile, updatedContact);
+      linked++;
+    }
+
+    for (const customerName of matchedCustomers) {
+      const customerFile = customerFiles.find((file) => file.basename === customerName);
+      if (!customerFile) continue;
+      const customerContent = await this.app.vault.read(customerFile);
+      const updatedCustomer = this.upsertFrontmatterArrays(customerContent, {
+        related_hubspot_contacts: [contactFile.basename],
+      });
+      if (updatedCustomer !== customerContent) {
+        await this.app.vault.modify(customerFile, updatedCustomer);
+        linked++;
+      }
+    }
+
+    return linked;
+  }
+
+  private async linkHubSpotDealToCustomers(
+    dealFile: TFile,
+    customerFiles: TFile[],
+  ): Promise<number> {
+    const fm = this.app.metadataCache.getFileCache(dealFile)?.frontmatter;
+    if (!fm) return 0;
+
+    const relatedCompanies = this.toStringArray(fm.related_companies).map((c) =>
+      c.toLowerCase(),
+    );
+    if (relatedCompanies.length === 0) return 0;
+
+    const matchedCustomers = customerFiles
+      .map((file) => file.basename)
+      .filter((customerName) =>
+        relatedCompanies.some((company) =>
+          company.includes(customerName.toLowerCase()),
+        ),
+      );
+
+    if (matchedCustomers.length === 0) return 0;
+
+    let linked = 0;
+    const content = await this.app.vault.read(dealFile);
+    const updatedDeal = this.upsertFrontmatterArrays(content, {
+      related_customers: matchedCustomers,
+    });
+    if (updatedDeal !== content) {
+      await this.app.vault.modify(dealFile, updatedDeal);
+      linked++;
+    }
+
+    for (const customerName of matchedCustomers) {
+      const customerFile = customerFiles.find((file) => file.basename === customerName);
+      if (!customerFile) continue;
+      const customerContent = await this.app.vault.read(customerFile);
+      const updatedCustomer = this.upsertFrontmatterArrays(customerContent, {
+        related_hubspot_deals: [dealFile.basename],
+      });
+      if (updatedCustomer !== customerContent) {
+        await this.app.vault.modify(customerFile, updatedCustomer);
+        linked++;
+      }
+    }
+
+    return linked;
+  }
+
+  private async linkHubSpotTicketToCustomers(
+    ticketFile: TFile,
+    customerFiles: TFile[],
+  ): Promise<number> {
+    const fm = this.app.metadataCache.getFileCache(ticketFile)?.frontmatter;
+    if (!fm) return 0;
+
+    const relatedCompanies = this.toStringArray(fm.related_companies).map((c) =>
+      c.toLowerCase(),
+    );
+    if (relatedCompanies.length === 0) return 0;
+
+    const matchedCustomers = customerFiles
+      .map((file) => file.basename)
+      .filter((customerName) =>
+        relatedCompanies.some((company) =>
+          company.includes(customerName.toLowerCase()),
+        ),
+      );
+
+    if (matchedCustomers.length === 0) return 0;
+
+    let linked = 0;
+    const content = await this.app.vault.read(ticketFile);
+    const updatedTicket = this.upsertFrontmatterArrays(content, {
+      related_customers: matchedCustomers,
+    });
+    if (updatedTicket !== content) {
+      await this.app.vault.modify(ticketFile, updatedTicket);
+      linked++;
+    }
+
+    for (const customerName of matchedCustomers) {
+      const customerFile = customerFiles.find((file) => file.basename === customerName);
+      if (!customerFile) continue;
+      const customerContent = await this.app.vault.read(customerFile);
+      const updatedCustomer = this.upsertFrontmatterArrays(customerContent, {
+        related_hubspot_tickets: [ticketFile.basename],
+      });
+      if (updatedCustomer !== customerContent) {
+        await this.app.vault.modify(customerFile, updatedCustomer);
+        linked++;
+      }
+    }
+
+    return linked;
+  }
+
+  private async linkHubSpotMeetingToGranolaMeetings(
+    hubspotMeetingFile: TFile,
+    granolaMeetingFiles: TFile[],
+  ): Promise<number> {
+    const content = await this.app.vault.read(hubspotMeetingFile);
+    const fm = this.app.metadataCache.getFileCache(hubspotMeetingFile)?.frontmatter;
+    const contactEmails = this
+      .toStringArray(fm?.contact_emails)
+      .map((email) => email.toLowerCase());
+    if (contactEmails.length === 0) return 0;
+
+    const matchedMeetings: string[] = [];
+    for (const granolaMeeting of granolaMeetingFiles) {
+      const meetingContent = (await this.app.vault.read(granolaMeeting)).toLowerCase();
+      if (contactEmails.some((email) => meetingContent.includes(email))) {
+        matchedMeetings.push(granolaMeeting.basename);
+      }
+    }
+
+    if (matchedMeetings.length === 0) return 0;
+
+    let linked = 0;
+    const updatedHubspot = this.upsertFrontmatterArrays(content, {
+      related_meetings: matchedMeetings,
+    });
+    if (updatedHubspot !== content) {
+      await this.app.vault.modify(hubspotMeetingFile, updatedHubspot);
+      linked++;
+    }
+
+    for (const granolaMeeting of granolaMeetingFiles) {
+      if (!matchedMeetings.includes(granolaMeeting.basename)) continue;
+      const granolaContent = await this.app.vault.read(granolaMeeting);
+      const updatedGranola = this.upsertFrontmatterArrays(granolaContent, {
+        related_hubspot_meetings: [hubspotMeetingFile.basename],
+      });
+      if (updatedGranola !== granolaContent) {
+        await this.app.vault.modify(granolaMeeting, updatedGranola);
+        linked++;
+      }
+    }
+
+    return linked;
+  }
+
+  private toStringArray(value: unknown): string[] {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string");
+    }
+    if (typeof value === "string") return [value];
+    return [];
   }
 
   private insertBeforeUserContent(content: string, section: string): string {
@@ -502,6 +792,8 @@ export function formatLinkResult(result: LinkResult): string {
   if (result.slackLinked > 0)
     parts.push(`${result.slackLinked} slack threads linked`);
   if (result.prsLinked > 0) parts.push(`${result.prsLinked} PRs linked`);
+  if (result.hubspotLinked > 0)
+    parts.push(`${result.hubspotLinked} HubSpot links`);
   return parts.length > 0
     ? `Linking: ${parts.join(", ")}`
     : "Linking: no new connections found";
