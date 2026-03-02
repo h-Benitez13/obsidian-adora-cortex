@@ -22,16 +22,28 @@ interface ViewerResponse {
   viewer: { id: string; name: string; email: string };
 }
 
+interface PageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+
+interface LinearConnection<T> {
+  nodes: T[];
+  pageInfo: PageInfo;
+}
+
 interface IssuesResponse {
-  issues: { nodes: LinearIssue[] };
+  issues: LinearConnection<LinearIssue>;
 }
 
 interface ProjectsResponse {
-  projects: { nodes: LinearProject[] };
+  projects: LinearConnection<LinearProject>;
 }
 
 export class LinearClient {
   private apiKey: string;
+  private static readonly PAGE_SIZE = 200;
+  private static readonly MAX_ITEMS = 2000;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -49,45 +61,49 @@ export class LinearClient {
   }
 
   async fetchMyIssues(): Promise<LinearIssue[]> {
-    const query = `query {
+    const query = `query MyIssues($first: Int!, $after: String) {
       issues(
         filter: {
           assignee: { isMe: { eq: true } }
           state: { type: { nin: ["completed", "cancelled"] } }
         }
-        first: 100
+        first: $first
+        after: $after
         orderBy: updatedAt
       ) {
         nodes { ${ISSUE_FIELDS} }
+        pageInfo { hasNextPage endCursor }
       }
     }`;
-    const data = await this.graphql<IssuesResponse>(query);
-    return data.issues.nodes;
+    return this.paginatedQuery<LinearIssue>(query, "issues");
   }
 
   async fetchTeamIssues(): Promise<LinearIssue[]> {
-    const query = `query {
+    const query = `query TeamIssues($first: Int!, $after: String) {
       issues(
         filter: {
           state: { type: { nin: ["completed", "cancelled"] } }
         }
-        first: 200
+        first: $first
+        after: $after
         orderBy: updatedAt
       ) {
         nodes { ${ISSUE_FIELDS} }
+        pageInfo { hasNextPage endCursor }
       }
     }`;
-    const data = await this.graphql<IssuesResponse>(query);
-    return data.issues.nodes;
+    return this.paginatedQuery<LinearIssue>(query, "issues");
   }
 
   async fetchProjects(): Promise<LinearProject[]> {
-    const query = `query {
+    const query = `query Projects($first: Int!, $after: String) {
       projects(
         filter: {
-          state: { type: { in: ["started", "planned"] } }
+          state: { type: { in: ["backlog", "planned", "started", "paused"] } }
         }
-        first: 50
+        first: $first
+        after: $after
+        orderBy: updatedAt
       ) {
         nodes {
           id
@@ -101,10 +117,44 @@ export class LinearClient {
           startDate
           targetDate
         }
+        pageInfo { hasNextPage endCursor }
       }
     }`;
-    const data = await this.graphql<ProjectsResponse>(query);
-    return data.projects.nodes;
+    return this.paginatedQuery<LinearProject>(query, "projects");
+  }
+
+  private async paginatedQuery<T, TKey extends string = string>(
+    query: string,
+    connectionKey: TKey,
+  ): Promise<T[]> {
+    const allNodes: T[] = [];
+    let after: string | null = null;
+
+    while (true) {
+      const data: Record<TKey, LinearConnection<T>> = await this.graphql<
+        Record<TKey, LinearConnection<T>>
+      >(query, {
+        first: LinearClient.PAGE_SIZE,
+        after,
+      });
+      const connection: LinearConnection<T> = data[connectionKey];
+      allNodes.push(...connection.nodes);
+
+      if (allNodes.length >= LinearClient.MAX_ITEMS) {
+        return allNodes.slice(0, LinearClient.MAX_ITEMS);
+      }
+
+      if (
+        !connection.pageInfo.hasNextPage ||
+        connection.pageInfo.endCursor === null
+      ) {
+        break;
+      }
+
+      after = connection.pageInfo.endCursor;
+    }
+
+    return allNodes;
   }
 
   private async graphql<T>(
