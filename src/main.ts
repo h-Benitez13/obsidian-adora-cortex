@@ -247,6 +247,12 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "granola-decisions-to-linear",
+      name: "Create Linear issues from decisions",
+      callback: () => this.createLinearIssuesFromDecisions(),
+    });
+
+    this.addCommand({
       id: "granola-post-digest-slack",
       name: "Post latest digest to Slack",
       callback: () => this.postLatestDigestOutbound(),
@@ -725,6 +731,10 @@ export default class GranolaAdoraPlugin extends Plugin {
       if (result.errors.length > 0) {
         console.error("Granola sync errors:", result.errors);
       }
+
+      this.firePostSyncAlerts().catch((e: unknown) =>
+        console.error("Post-sync alerts failed:", e),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       new Notice(`Granola sync failed: ${message}`);
@@ -1179,8 +1189,9 @@ export default class GranolaAdoraPlugin extends Plugin {
         summaries.push(await this.getMeetingSummary(file));
       }
 
+      const revenueContext = await this.gatherRevenueContext();
       const asksSourcePaths = relevantFiles.slice(0, 40).map((f) => f.path);
-      const result = await ai.extractTopCustomerAsks(summaries);
+      const result = await ai.extractTopCustomerAsks(summaries, revenueContext);
       const dateStr = new Date().toISOString().split("T")[0];
       const filePath = normalizePath(
         `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/Customer Asks — ${dateStr}.md`,
@@ -1526,6 +1537,167 @@ export default class GranolaAdoraPlugin extends Plugin {
     } else {
       new Notice("No decisions were saved.");
     }
+  }
+
+  private async createLinearIssuesFromDecisions(): Promise<void> {
+    if (!this.settings.syncLinear || !this.settings.linearApiKey) {
+      new Notice("Linear is not configured. Add an API key in settings.");
+      return;
+    }
+
+    const decisionsFolderPath = `${this.settings.baseFolderPath}/${this.settings.decisionsFolderName}`;
+    const decisionFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(decisionsFolderPath + "/"));
+
+    if (decisionFiles.length === 0) {
+      new Notice("No decision notes found. Extract decisions from a meeting first.");
+      return;
+    }
+
+    const unlinkedDecisions: { file: TFile; title: string; description: string }[] = [];
+    for (const file of decisionFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (fm?.linear_issue_id) continue;
+      const content = await this.app.vault.read(file);
+      const body = content.replace(/^---[\s\S]*?---/, "").trim();
+      unlinkedDecisions.push({
+        file,
+        title: fm?.title ?? file.basename,
+        description: body.substring(0, 2000),
+      });
+    }
+
+    if (unlinkedDecisions.length === 0) {
+      new Notice("All decisions already have linked Linear issues.");
+      return;
+    }
+
+    const client = new LinearClient(this.settings.linearApiKey);
+    let teams: { id: string; name: string; key: string }[];
+    try {
+      teams = await client.fetchTeams();
+    } catch {
+      new Notice("Failed to fetch Linear teams. Check your API key.");
+      return;
+    }
+
+    if (teams.length === 0) {
+      new Notice("No Linear teams found.");
+      return;
+    }
+
+    const teamId = teams[0].id;
+    let created = 0;
+
+    new Notice(`Creating ${unlinkedDecisions.length} Linear issue(s) from decisions...`);
+
+    for (const dec of unlinkedDecisions) {
+      try {
+        const issue = await client.createIssue({
+          teamId,
+          title: `[Decision] ${dec.title}`,
+          description: dec.description,
+          priority: 3,
+        });
+
+        const content = await this.app.vault.read(dec.file);
+        const updated = content.replace(
+          /^---\n/,
+          `---\nlinear_issue_id: "${issue.identifier}"\nlinear_issue_url: "${issue.url}"\n`,
+        );
+        await this.app.vault.modify(dec.file, updated);
+        created++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        console.error(`Failed to create Linear issue for ${dec.title}:`, msg);
+      }
+    }
+
+    new Notice(
+      created > 0
+        ? `Created ${created} Linear issue${created > 1 ? "s" : ""} from decisions.`
+        : "Failed to create Linear issues. Check console for details.",
+    );
+  }
+
+  private async firePostSyncAlerts(): Promise<void> {
+    if (!this.settings.outboundEnabled || !this.settings.isDesignatedBrain) return;
+    if (!this.settings.notifySlackEnabled || !this.settings.slackHealthAlertChannelId) return;
+
+    const customersFolderPath = `${this.settings.baseFolderPath}/${this.settings.customersFolderName}`;
+    const customerFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(customersFolderPath + "/"));
+
+    const scores: { customer: string; health: import("./types").HealthScore }[] = [];
+    for (const file of customerFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (fm?.health_score !== undefined) {
+        scores.push({
+          customer: fm.company ?? file.basename,
+          health: {
+            score: fm.health_score,
+            tier: fm.health_tier ?? "unknown",
+            meeting_frequency: fm.meeting_frequency ?? 0,
+            open_issues: fm.open_issues ?? 0,
+            sentiment: fm.sentiment,
+            last_calculated: fm.health_last_calculated ?? new Date().toISOString(),
+          },
+        });
+      }
+    }
+
+    if (scores.length === 0) return;
+
+    this.outboundNotifier.rebuildClients();
+    const result = await this.outboundNotifier.notifyHealthAlerts(scores);
+    if (result.sent > 0) {
+      new Notice(formatNotifyResult(result));
+    }
+  }
+
+  private async gatherRevenueContext(): Promise<string | undefined> {
+    const basePath = this.settings.baseFolderPath;
+    const dealsFolderPath = `${basePath}/${this.settings.hubspotFolderName}/Deals`;
+    const companiesFolderPath = `${basePath}/${this.settings.hubspotFolderName}/Companies`;
+
+    const dealFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(dealsFolderPath + "/"));
+    const companyFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(companiesFolderPath + "/"));
+
+    if (dealFiles.length === 0 && companyFiles.length === 0) {
+      return undefined;
+    }
+
+    const lines: string[] = [];
+
+    for (const file of dealFiles.slice(0, 50)) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+      const name = fm.deal_name ?? file.basename;
+      const amount = fm.amount ?? "unknown";
+      const stage = fm.deal_stage ?? "unknown";
+      const companies = fm.related_companies ?? [];
+      const companyStr = Array.isArray(companies) ? companies.join(", ") : String(companies);
+      lines.push(`Deal: ${name} | Amount: ${amount} | Stage: ${stage} | Companies: ${companyStr}`);
+    }
+
+    for (const file of companyFiles.slice(0, 50)) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+      const name = fm.company ?? file.basename;
+      const revenue = fm.annual_revenue ?? fm.annualRevenue;
+      const employees = fm.number_of_employees ?? fm.numberOfEmployees;
+      if (revenue || employees) {
+        lines.push(`Company: ${name} | Annual Revenue: ${revenue ?? "unknown"} | Employees: ${employees ?? "unknown"}`);
+      }
+    }
+
+    return lines.length > 0 ? lines.join("\n") : undefined;
   }
 
   private async postLatestDigestOutbound(): Promise<void> {

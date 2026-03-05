@@ -123,6 +123,39 @@ export class LinearClient {
     return this.paginatedQuery<LinearProject>(query, "projects");
   }
 
+  async fetchTeams(): Promise<{ id: string; name: string; key: string }[]> {
+    const data = await this.graphql<{
+      teams: LinearConnection<{ id: string; name: string; key: string }>;
+    }>(`query { teams { nodes { id name key } pageInfo { hasNextPage endCursor } } }`);
+    return data.teams.nodes;
+  }
+
+  async createIssue(input: {
+    teamId: string;
+    title: string;
+    description?: string;
+    priority?: number;
+  }): Promise<{ id: string; identifier: string; url: string }> {
+    const data = await this.graphql<{
+      issueCreate: {
+        success: boolean;
+        issue: { id: string; identifier: string; url: string };
+      };
+    }>(
+      `mutation CreateIssue($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue { id identifier url }
+        }
+      }`,
+      { input },
+    );
+    if (!data.issueCreate.success) {
+      throw new Error("Linear issue creation failed");
+    }
+    return data.issueCreate.issue;
+  }
+
   async fetchCompletedIssues(since?: string): Promise<LinearIssue[]> {
     let filterBlock = `state: { type: { eq: "completed" } }`;
     if (since) {
