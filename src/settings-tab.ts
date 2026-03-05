@@ -7,6 +7,7 @@ import { HubSpotClient } from "./hubspot";
 import { LinearClient } from "./linear";
 import { SlackClient } from "./slack";
 import { Linker, formatLinkResult } from "./linker";
+import { SlackNotifier, NotionPublisher } from "./notifier";
 
 export class GranolaAdoraSettingTab extends PluginSettingTab {
   plugin: GranolaAdoraPlugin;
@@ -748,6 +749,221 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
           await this.plugin.activateAskAdoraView();
         }),
       );
+
+    containerEl.createEl("h3", { text: "Outbound Notifications" });
+
+    new Setting(containerEl)
+      .setName("Enable outbound")
+      .setDesc(
+        "Push digests, health alerts, and customer asks to Slack and Notion.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.outboundEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.outboundEnabled = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Designated brain")
+      .setDesc(
+        "Only one vault should send outbound notifications to avoid duplicates. Toggle this on for exactly one team member.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.isDesignatedBrain)
+          .onChange(async (value) => {
+            this.plugin.settings.isDesignatedBrain = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Post to Slack")
+      .setDesc("Send digests and health alerts to Slack channels.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.notifySlackEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.notifySlackEnabled = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Slack digest channel ID")
+      .setDesc(
+        "Channel ID to post weekly digests (e.g. C01234ABCDE). Find via right-click channel → View channel details.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("C01234ABCDE")
+          .setValue(this.plugin.settings.slackDigestChannelId)
+          .onChange(async (value) => {
+            this.plugin.settings.slackDigestChannelId = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Slack health alert channel ID")
+      .setDesc("Channel ID to post customer health alerts.")
+      .addText((text) =>
+        text
+          .setPlaceholder("C01234ABCDE")
+          .setValue(this.plugin.settings.slackHealthAlertChannelId)
+          .onChange(async (value) => {
+            this.plugin.settings.slackHealthAlertChannelId = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Health alert threshold")
+      .setDesc("Alert when a customer health score drops below this value (0–100).")
+      .addText((text) =>
+        text
+          .setPlaceholder("40")
+          .setValue(String(this.plugin.settings.healthAlertThreshold))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthAlertThreshold = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    const slackOutboundTest = new Setting(containerEl)
+      .setName("Test Slack outbound")
+      .setDesc("Verify your Slack bot can post messages.");
+
+    slackOutboundTest.addButton((btn) =>
+      btn.setButtonText("Test").onClick(async () => {
+        const token = this.plugin.settings.slackBotToken;
+        if (!token) {
+          new Notice("Configure a Slack bot token first (in the Slack section above).");
+          return;
+        }
+        btn.setButtonText("Testing...");
+        btn.setDisabled(true);
+        try {
+          const notifier = new SlackNotifier(
+            token,
+            () => this.plugin.settings,
+            () => this.plugin.savePluginSettings(),
+          );
+          const ok = await notifier.testConnection();
+          if (ok) {
+            new Notice("Slack outbound: Connected — bot can post messages.");
+            slackOutboundTest.setDesc("Connected ✓");
+          } else {
+            new Notice("Slack outbound: Connection failed. Check bot token and chat:write scope.");
+            slackOutboundTest.setDesc("Connection failed — check token and scopes.");
+          }
+        } catch {
+          new Notice("Slack outbound: Connection failed.");
+          slackOutboundTest.setDesc("Connection failed.");
+        } finally {
+          btn.setButtonText("Test");
+          btn.setDisabled(false);
+        }
+      }),
+    );
+
+    new Setting(containerEl)
+      .setName("Publish to Notion")
+      .setDesc("Push digests and customer asks to Notion pages/databases.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.notifyNotionEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.notifyNotionEnabled = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Notion integration token")
+      .setDesc("Internal integration token from notion.so/my-integrations.")
+      .addText((text) =>
+        text
+          .setPlaceholder("ntn_...")
+          .setValue(this.plugin.settings.notionApiToken)
+          .then((t) => {
+            t.inputEl.type = "password";
+            t.inputEl.style.width = "100%";
+          })
+          .onChange(async (value) => {
+            this.plugin.settings.notionApiToken = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Notion digest parent page ID")
+      .setDesc("Page ID where weekly digests are created as sub-pages.")
+      .addText((text) =>
+        text
+          .setPlaceholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+          .setValue(this.plugin.settings.notionDigestParentId)
+          .onChange(async (value) => {
+            this.plugin.settings.notionDigestParentId = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Notion customer asks database ID")
+      .setDesc("Database ID where customer ask reports are added as pages.")
+      .addText((text) =>
+        text
+          .setPlaceholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+          .setValue(this.plugin.settings.notionCustomerAsksDbId)
+          .onChange(async (value) => {
+            this.plugin.settings.notionCustomerAsksDbId = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    const notionOutboundTest = new Setting(containerEl)
+      .setName("Test Notion outbound")
+      .setDesc("Verify your Notion integration token works.");
+
+    notionOutboundTest.addButton((btn) =>
+      btn.setButtonText("Test").onClick(async () => {
+        const token = this.plugin.settings.notionApiToken;
+        if (!token) {
+          new Notice("Configure a Notion integration token first.");
+          return;
+        }
+        btn.setButtonText("Testing...");
+        btn.setDisabled(true);
+        try {
+          const publisher = new NotionPublisher(
+            token,
+            () => this.plugin.settings,
+            () => this.plugin.savePluginSettings(),
+          );
+          const ok = await publisher.testConnection();
+          if (ok) {
+            new Notice("Notion outbound: Connected.");
+            notionOutboundTest.setDesc("Connected ✓");
+          } else {
+            new Notice("Notion outbound: Connection failed. Check token.");
+            notionOutboundTest.setDesc("Connection failed — check token.");
+          }
+        } catch {
+          new Notice("Notion outbound: Connection failed.");
+          notionOutboundTest.setDesc("Connection failed.");
+        } finally {
+          btn.setButtonText("Test");
+          btn.setDisabled(false);
+        }
+      }),
+    );
 
     containerEl.createEl("h3", { text: "Folders" });
 

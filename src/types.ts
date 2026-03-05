@@ -370,6 +370,27 @@ export interface GranolaAdoraSettings {
   releaseNotesFolderName: string;
   aiModelFast: string;
   aiModelDeep: string;
+  // ── Outbound Notifications ──
+  /** Post digests, alerts, and asks to Slack / Notion. */
+  outboundEnabled: boolean;
+  /** Designated brain — only this vault sends outbound notifications. */
+  isDesignatedBrain: boolean;
+  // Slack outbound
+  notifySlackEnabled: boolean;
+  slackDigestChannelId: string;
+  slackHealthAlertChannelId: string;
+  /** Health score threshold — alert when a customer drops below this. */
+  healthAlertThreshold: number;
+  // Notion outbound
+  notifyNotionEnabled: boolean;
+  /** Notion integration token (Internal Integration). */
+  notionApiToken: string;
+  /** Notion parent page ID where digests are published. */
+  notionDigestParentId: string;
+  /** Notion database ID where customer asks are published. */
+  notionCustomerAsksDbId: string;
+  /** Tracks already-notified items to prevent duplicates: key = itemType:itemId, value = ISO timestamp. */
+  notifiedItems: Record<string, string>;
 }
 
 export interface TeamConfigTemplate {
@@ -409,6 +430,11 @@ export interface TeamConfigTemplate {
   healthScoreEnabled: boolean;
   decisionsFolderName: string;
   releaseNotesFolderName: string;
+  outboundEnabled: boolean;
+  isDesignatedBrain: boolean;
+  notifySlackEnabled: boolean;
+  notifyNotionEnabled: boolean;
+  healthAlertThreshold: number;
 }
 
 export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
@@ -474,6 +500,17 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   releaseNotesFolderName: "Releases",
   aiModelFast: "claude-haiku-4-20250414",
   aiModelDeep: "claude-sonnet-4-20250514",
+  outboundEnabled: false,
+  isDesignatedBrain: false,
+  notifySlackEnabled: false,
+  slackDigestChannelId: "",
+  slackHealthAlertChannelId: "",
+  healthAlertThreshold: 40,
+  notifyNotionEnabled: false,
+  notionApiToken: "",
+  notionDigestParentId: "",
+  notionCustomerAsksDbId: "",
+  notifiedItems: {},
 };
 
 export interface SyncResult {

@@ -26,6 +26,7 @@ import { Linker, formatLinkResult } from "./linker";
 import { calculateHealthScore, updateHealthScoreInContent } from "./profiles";
 import { LinearClient } from "./linear";
 import { ASK_ADORA_VIEW_TYPE, AskAdoraView } from "./ask-adora-view";
+import { OutboundNotifier, formatNotifyResult } from "./notifier";
 
 export default class GranolaAdoraPlugin extends Plugin {
   settings: GranolaAdoraSettings = DEFAULT_SETTINGS;
@@ -34,6 +35,7 @@ export default class GranolaAdoraPlugin extends Plugin {
   private syncEngine!: SyncEngine;
   private autoSyncIntervalId: number | null = null;
   private isSyncing = false;
+  outboundNotifier!: OutboundNotifier;
 
   async onload(): Promise<void> {
     await this.loadPluginSettings();
@@ -46,6 +48,10 @@ export default class GranolaAdoraPlugin extends Plugin {
       this.app,
       this.api,
       this.tagger,
+      () => this.settings,
+      () => this.savePluginSettings(),
+    );
+    this.outboundNotifier = new OutboundNotifier(
       () => this.settings,
       () => this.savePluginSettings(),
     );
@@ -241,6 +247,24 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "granola-post-digest-slack",
+      name: "Post latest digest to Slack",
+      callback: () => this.postLatestDigestOutbound(),
+    });
+
+    this.addCommand({
+      id: "granola-post-health-alerts",
+      name: "Post customer health alerts to Slack",
+      callback: () => this.postHealthAlertsOutbound(),
+    });
+
+    this.addCommand({
+      id: "granola-post-asks-notion",
+      name: "Publish customer asks to Notion",
+      callback: () => this.postCustomerAsksOutbound(),
+    });
+
+    this.addCommand({
       id: "granola-export-config",
       name: "Export team config template",
       callback: () => this.exportTeamConfigTemplate(),
@@ -317,6 +341,11 @@ export default class GranolaAdoraPlugin extends Plugin {
       healthScoreEnabled: this.settings.healthScoreEnabled,
       decisionsFolderName: this.settings.decisionsFolderName,
       releaseNotesFolderName: this.settings.releaseNotesFolderName,
+      outboundEnabled: this.settings.outboundEnabled,
+      isDesignatedBrain: this.settings.isDesignatedBrain,
+      notifySlackEnabled: this.settings.notifySlackEnabled,
+      notifyNotionEnabled: this.settings.notifyNotionEnabled,
+      healthAlertThreshold: this.settings.healthAlertThreshold,
     };
 
     const exportPath = normalizePath(
@@ -499,6 +528,11 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("healthScoreEnabled");
     apply("decisionsFolderName");
     apply("releaseNotesFolderName");
+    apply("outboundEnabled");
+    apply("isDesignatedBrain");
+    apply("notifySlackEnabled");
+    apply("notifyNotionEnabled");
+    apply("healthAlertThreshold");
 
     this.updateTaggerConfig();
     this.restartAutoSync();
@@ -1039,6 +1073,17 @@ export default class GranolaAdoraPlugin extends Plugin {
         digestSourcePaths,
       );
       new Notice("Weekly digest generated!");
+
+      if (this.settings.outboundEnabled && this.settings.isDesignatedBrain) {
+        this.outboundNotifier.rebuildClients();
+        const notifyResult = await this.outboundNotifier.notifyDigest(
+          `Week of ${dateStr}`,
+          result,
+        );
+        if (notifyResult.sent > 0) {
+          new Notice(formatNotifyResult(notifyResult));
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       new Notice(`Failed to generate digest: ${message}`);
@@ -1149,6 +1194,17 @@ export default class GranolaAdoraPlugin extends Plugin {
         asksSourcePaths,
       );
       new Notice("Top customer asks report generated!");
+
+      if (this.settings.outboundEnabled && this.settings.isDesignatedBrain) {
+        this.outboundNotifier.rebuildClients();
+        const notifyResult = await this.outboundNotifier.notifyCustomerAsks(
+          `Customer Asks — ${dateStr}`,
+          result,
+        );
+        if (notifyResult.sent > 0) {
+          new Notice(formatNotifyResult(notifyResult));
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       new Notice(`Failed to generate customer asks report: ${message}`);
@@ -1470,6 +1526,90 @@ export default class GranolaAdoraPlugin extends Plugin {
     } else {
       new Notice("No decisions were saved.");
     }
+  }
+
+  private async postLatestDigestOutbound(): Promise<void> {
+    const digestFolder = `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/`;
+    const digestFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(digestFolder) && f.basename.startsWith("Week of"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime);
+
+    if (digestFiles.length === 0) {
+      new Notice("No weekly digests found. Generate one first.");
+      return;
+    }
+
+    const latest = digestFiles[0];
+    const content = await this.app.vault.read(latest);
+    const body = content.replace(/^---[\s\S]*?---/, "").trim();
+
+    this.outboundNotifier.rebuildClients();
+    new Notice("Posting digest to outbound channels...");
+    const result = await this.outboundNotifier.notifyDigest(latest.basename, body);
+    new Notice(formatNotifyResult(result));
+  }
+
+  private async postHealthAlertsOutbound(): Promise<void> {
+    const customersFolderPath = `${this.settings.baseFolderPath}/${this.settings.customersFolderName}`;
+    const customerFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(customersFolderPath + "/"));
+
+    if (customerFiles.length === 0) {
+      new Notice("No customer files found.");
+      return;
+    }
+
+    const scores: { customer: string; health: import("./types").HealthScore }[] = [];
+    for (const file of customerFiles) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (fm?.health_score !== undefined) {
+        scores.push({
+          customer: fm.company ?? file.basename,
+          health: {
+            score: fm.health_score,
+            tier: fm.health_tier ?? "unknown",
+            meeting_frequency: fm.meeting_frequency ?? 0,
+            open_issues: fm.open_issues ?? 0,
+            sentiment: fm.sentiment,
+            last_calculated: fm.health_last_calculated ?? new Date().toISOString(),
+          },
+        });
+      }
+    }
+
+    if (scores.length === 0) {
+      new Notice("No health scores found. Run 'Recalculate health scores' first.");
+      return;
+    }
+
+    this.outboundNotifier.rebuildClients();
+    new Notice("Checking health alerts...");
+    const result = await this.outboundNotifier.notifyHealthAlerts(scores);
+    new Notice(formatNotifyResult(result));
+  }
+
+  private async postCustomerAsksOutbound(): Promise<void> {
+    const digestFolder = `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/`;
+    const asksFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(digestFolder) && f.basename.startsWith("Customer Asks"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime);
+
+    if (asksFiles.length === 0) {
+      new Notice("No customer asks reports found. Generate one first.");
+      return;
+    }
+
+    const latest = asksFiles[0];
+    const content = await this.app.vault.read(latest);
+    const body = content.replace(/^---[\s\S]*?---/, "").trim();
+
+    this.outboundNotifier.rebuildClients();
+    new Notice("Publishing customer asks to outbound channels...");
+    const result = await this.outboundNotifier.notifyCustomerAsks(latest.basename, body);
+    new Notice(formatNotifyResult(result));
   }
 }
 
