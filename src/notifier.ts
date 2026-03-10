@@ -539,6 +539,10 @@ export class OutboundNotifier {
 
     return combined;
   }
+
+  getNotionPublisher(): NotionPublisher | null {
+    return this.notion;
+  }
 }
 
 function mergeResult(target: NotifyResult, source: NotifyResult): void {

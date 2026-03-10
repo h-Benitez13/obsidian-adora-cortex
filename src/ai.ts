@@ -1,5 +1,10 @@
 import { requestUrl } from "obsidian";
-import { AskAdoraMessage, LinearIssue, Decision } from "./types";
+import {
+  AskAdoraMessage,
+  LinearIssue,
+  Decision,
+  CustomerAskSignal,
+} from "./types";
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
@@ -208,6 +213,51 @@ export class AICortex {
     }
   }
 
+  async extractCustomerAsksFromMeeting(
+    meetingContent: string,
+  ): Promise<CustomerAskSignal[]> {
+    const truncated = this.truncate(meetingContent, 10000);
+    const response = await this.callClaudeDeep(
+      'Extract explicit customer asks/requests from this meeting note or transcript. Return ONLY asks that are clear, actionable requests.\nFor each ask return:\n- summary: one-sentence request\n- evidence: exact quote or close paraphrase from the note\n- requestedBy: customer/company name when available\n- impact: high | medium | low\n\nReturn ONLY valid JSON array: [{"summary":"...","evidence":"...","requestedBy":"...","impact":"medium"}]',
+      `Meeting content:\n\n${truncated}`,
+    );
+
+    try {
+      const cleaned = response
+        .replace(/```json?\n?/g, "")
+        .replace(/```/g, "")
+        .trim();
+      const parsed = JSON.parse(cleaned);
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed
+        .filter((item: unknown) => !!item && typeof item === "object")
+        .map((item: Record<string, unknown>) => {
+          const impactRaw =
+            typeof item.impact === "string"
+              ? item.impact.toLowerCase()
+              : "medium";
+          const impact: CustomerAskSignal["impact"] =
+            impactRaw === "high" || impactRaw === "low" ? impactRaw : "medium";
+
+          return {
+            summary:
+              typeof item.summary === "string" ? item.summary.trim() : "",
+            evidence:
+              typeof item.evidence === "string" ? item.evidence.trim() : "",
+            requestedBy:
+              typeof item.requestedBy === "string"
+                ? item.requestedBy.trim()
+                : undefined,
+            impact,
+          };
+        })
+        .filter((ask) => ask.summary.length > 0 && ask.evidence.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
   async generateReleaseNotes(
     issuesByProject: Record<string, LinearIssue[]>,
   ): Promise<string> {
@@ -229,6 +279,13 @@ export class AICortex {
     return this.callClaudeDeep(
       "Generate professional release notes from these completed issues, grouped by project. For each issue, write a concise user-facing description (1-2 sentences). Focus on what changed for the user, not technical implementation details. Output clean markdown with project headings (## Project Name) and bullet lists.",
       `Completed issues by project:\n\n${truncated}`,
+    );
+  }
+
+  async refineEasyTicketRecommendation(prompt: string): Promise<string> {
+    return this.callClaudeDeep(
+      "You are refining low-risk coding-bot work recommendations. Return only valid JSON matching the requested schema.",
+      this.truncate(prompt, 12000),
     );
   }
 

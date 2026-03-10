@@ -28,17 +28,34 @@ import { LinearClient } from "./linear";
 import { ASK_ADORA_VIEW_TYPE, AskAdoraView } from "./ask-adora-view";
 import { OutboundNotifier, formatNotifyResult } from "./notifier";
 import {
+  buildIncidentRecordFromActiveNote,
+  buildRecommendationSeedFromActiveNote,
+} from "./active-note-recommendations";
+import {
   buildAutomationLogFilePath,
   buildAutomationLogsFolder,
   renderAutomationAuditBlock,
   renderAutomationAuditFile,
 } from "./automation-audit";
+import { validateCanonicalRecord } from "./learning-schema";
 import { buildRecommendationQueueFolder } from "./recommendation-queue";
 import {
   IncidentReviewItem,
   RecommendationReviewItem,
   renderReviewSummary,
 } from "./reporting";
+import { renderHoverboardProposalMarkdown } from "./hoverboard-proposals";
+import {
+  buildRecommendationWorkflowRationale,
+  createRecommendationWorkflowArtifacts,
+} from "./recommendation-workflow";
+import {
+  buildTicketRefinementPrompt,
+  fallbackTicketRefinement,
+  parseTicketRefinementResponse,
+  shouldRunTicketRefinement,
+} from "./ticket-refinement";
+import { scoreEasyTicketHeuristics } from "./ticket-scoring";
 
 export default class GranolaAdoraPlugin extends Plugin {
   settings: GranolaAdoraSettings = DEFAULT_SETTINGS;
@@ -292,6 +309,18 @@ export default class GranolaAdoraPlugin extends Plugin {
       id: "granola-generate-review-summary",
       name: "Generate bot review summary",
       callback: () => this.generateReviewSummary(),
+    });
+
+    this.addCommand({
+      id: "granola-generate-recommendation-from-active-note",
+      name: "Generate bot recommendation from active note",
+      callback: () => this.generateRecommendationFromActiveNote(),
+    });
+
+    this.addCommand({
+      id: "granola-publish-active-incident-notion",
+      name: "Publish active incident to Notion",
+      callback: () => this.publishActiveIncidentToNotion(),
     });
 
     this.addCommand({
@@ -2076,6 +2105,170 @@ export default class GranolaAdoraPlugin extends Plugin {
     }
 
     new Notice("Bot review summary generated.");
+  }
+
+  private async ensureFolderPath(folderPath: string): Promise<void> {
+    const parts = folderPath.split("/").filter(Boolean);
+    let current = "";
+
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) {
+        await this.app.vault.createFolder(current);
+      }
+    }
+  }
+
+  private async generateRecommendationFromActiveNote(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new Notice("No active file. Open a candidate note first.");
+      return;
+    }
+
+    const content = await this.app.vault.read(activeFile);
+    const frontmatter =
+      (this.app.metadataCache.getFileCache(activeFile)?.frontmatter as
+        | Record<string, unknown>
+        | undefined) ?? {};
+    const body = content.replace(/^---[\s\S]*?---/, "").trim();
+    const seed = buildRecommendationSeedFromActiveNote(
+      activeFile.path,
+      activeFile.basename,
+      frontmatter,
+      body,
+    );
+    const heuristic = scoreEasyTicketHeuristics(seed.heuristicInput);
+
+    if (!heuristic.easy) {
+      new Notice(
+        `Recommendation blocked: ${heuristic.blockingReasons.join(", ") || "heuristic gate failed"}`,
+      );
+      return;
+    }
+
+    const ai = this.requireAI();
+    const refinement = shouldRunTicketRefinement(heuristic)
+      ? ai
+        ? parseTicketRefinementResponse(
+            await ai.refineEasyTicketRecommendation(
+              buildTicketRefinementPrompt(seed.heuristicInput, heuristic),
+            ),
+          )
+        : fallbackTicketRefinement("ai-disabled")
+      : fallbackTicketRefinement("heuristic-not-eligible");
+
+    const artifacts = createRecommendationWorkflowArtifacts(
+      {
+        sourceCanonicalId: seed.sourceCanonicalId,
+        relatedIds: seed.relatedIds,
+        repo: seed.repo,
+        title: seed.title,
+        summary: seed.summary,
+        recommendationKind: seed.recommendationKind,
+        evidence: seed.evidence,
+        heuristic,
+        refinement,
+      },
+      {
+        generatedAt: new Date().toISOString(),
+        destinationBranch: `bot/recommendations/${seed.recommendationKind}-${seed.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`,
+        riskLevel: refinement.reviewRequired ? "medium" : "low",
+        rationale: buildRecommendationWorkflowRationale(
+          seed.heuristicInput,
+          heuristic,
+          refinement,
+        ),
+      },
+      {
+        baseFolderPath: this.settings.baseFolderPath,
+        generatedAt: new Date().toISOString(),
+        rationale: refinement.rationale,
+      },
+    );
+
+    if (!artifacts) {
+      new Notice("Recommendation workflow did not produce artifacts.");
+      return;
+    }
+
+    await this.ensureFolderPath(artifacts.queueNote.folderPath);
+    const existingQueue = this.app.vault.getAbstractFileByPath(
+      artifacts.queueNote.filePath,
+    );
+    if (existingQueue instanceof TFile) {
+      await this.app.vault.modify(existingQueue, artifacts.queueNote.content);
+    } else {
+      await this.app.vault.create(
+        artifacts.queueNote.filePath,
+        artifacts.queueNote.content,
+      );
+    }
+
+    const proposalFolder = `${artifacts.queueNote.folderPath}/Hoverboard Proposals`;
+    await this.ensureFolderPath(proposalFolder);
+    const proposalPath = `${proposalFolder}/${artifacts.proposal.slug}.md`;
+    const proposalContent = renderHoverboardProposalMarkdown(artifacts.proposal);
+    const existingProposal = this.app.vault.getAbstractFileByPath(proposalPath);
+    if (existingProposal instanceof TFile) {
+      await this.app.vault.modify(existingProposal, proposalContent);
+    } else {
+      await this.app.vault.create(proposalPath, proposalContent);
+    }
+
+    new Notice(
+      `Generated recommendation artifacts for ${seed.title} (${artifacts.recommendation.state}).`,
+    );
+  }
+
+  private async publishActiveIncidentToNotion(): Promise<void> {
+    if (!this.settings.notifyNotionEnabled || !this.settings.notionApiToken) {
+      new Notice("Notion outbound is not configured.");
+      return;
+    }
+    if (!this.settings.notionIncidentsDbId) {
+      new Notice("Notion incidents database ID is not configured.");
+      return;
+    }
+
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new Notice("No active file. Open an incident note first.");
+      return;
+    }
+
+    const content = await this.app.vault.read(activeFile);
+    const frontmatter =
+      (this.app.metadataCache.getFileCache(activeFile)?.frontmatter as
+        | Record<string, unknown>
+        | undefined) ?? {};
+    const body = content.replace(/^---[\s\S]*?---/, "").trim();
+    const incident = buildIncidentRecordFromActiveNote(
+      activeFile.path,
+      activeFile.basename,
+      frontmatter,
+      body,
+    );
+    const errors = validateCanonicalRecord(incident);
+    if (errors.length > 0) {
+      new Notice(`Incident note is missing required fields: ${errors.join(", ")}`);
+      return;
+    }
+
+    const publisher = new OutboundNotifier(
+      () => this.settings,
+      () => this.savePluginSettings(),
+    ).getNotionPublisher();
+    if (!publisher) {
+      new Notice("Notion publisher is unavailable.");
+      return;
+    }
+
+    const result = await publisher.publishIncident(
+      this.settings.notionIncidentsDbId,
+      incident,
+    );
+    new Notice(formatNotifyResult(result));
   }
 
   private async firePostSyncAlerts(): Promise<void> {
