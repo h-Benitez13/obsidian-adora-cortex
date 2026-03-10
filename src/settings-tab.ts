@@ -184,6 +184,34 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         }),
     );
 
+    new Setting(containerEl)
+      .setName("Auto-create Linear tickets from customer asks")
+      .setDesc(
+        "After each Granola sync, detect explicit customer asks in recent notes/transcripts and open up to 3 deduped Linear issues.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoCreateLinearFromCustomerAsks)
+          .onChange(async (value) => {
+            this.plugin.settings.autoCreateLinearFromCustomerAsks = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Customer ask Linear automation dry run")
+      .setDesc(
+        "Preview which tickets would be created and write audit logs without creating Linear issues.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoCreateLinearFromCustomerAsksDryRun)
+          .onChange(async (value) => {
+            this.plugin.settings.autoCreateLinearFromCustomerAsksDryRun = value;
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
     containerEl.createEl("h3", { text: "Figma" });
 
     new Setting(containerEl)
@@ -745,9 +773,12 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
       .setName("Ask Adora chat panel")
       .setDesc("Open the AI chat panel for free-form questions.")
       .addButton((btn) =>
-        btn.setButtonText("Open panel").setCta().onClick(async () => {
-          await this.plugin.activateAskAdoraView();
-        }),
+        btn
+          .setButtonText("Open panel")
+          .setCta()
+          .onClick(async () => {
+            await this.plugin.activateAskAdoraView();
+          }),
       );
 
     containerEl.createEl("h3", { text: "Outbound Notifications" });
@@ -822,7 +853,9 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Health alert threshold")
-      .setDesc("Alert when a customer health score drops below this value (0–100).")
+      .setDesc(
+        "Alert when a customer health score drops below this value (0–100).",
+      )
       .addText((text) =>
         text
           .setPlaceholder("40")
@@ -836,6 +869,201 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
           }),
       );
 
+    containerEl.createEl("h4", { text: "Renewal rubric formula (advanced)" });
+
+    new Setting(containerEl)
+      .setName("Component weight: Customer Satisfaction (%)")
+      .setDesc("Relative weight in final renewal score.")
+      .addText((text) =>
+        text
+          .setPlaceholder("33.3")
+          .setValue(
+            String(this.plugin.settings.healthWeightCustomerSatisfaction),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthWeightCustomerSatisfaction = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Component weight: Performance Goals (%)")
+      .setDesc("Relative weight in final renewal score.")
+      .addText((text) =>
+        text
+          .setPlaceholder("33.3")
+          .setValue(String(this.plugin.settings.healthWeightPerformanceGoals))
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthWeightPerformanceGoals = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Component weight: Product Engagement (%)")
+      .setDesc("Relative weight in final renewal score.")
+      .addText((text) =>
+        text
+          .setPlaceholder("33.4")
+          .setValue(String(this.plugin.settings.healthWeightProductEngagement))
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthWeightProductEngagement = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Customer Satisfaction mix: Sentiment weight")
+      .setDesc("Used with Issues weight to compute Customer Satisfaction.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.7")
+          .setValue(
+            String(
+              this.plugin.settings.healthCustomerSatisfactionSentimentWeight,
+            ),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthCustomerSatisfactionSentimentWeight =
+                num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Customer Satisfaction mix: Issues weight")
+      .setDesc("Used with Sentiment weight to compute Customer Satisfaction.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.3")
+          .setValue(
+            String(this.plugin.settings.healthCustomerSatisfactionIssuesWeight),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthCustomerSatisfactionIssuesWeight = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Performance Goals mix: Issues weight")
+      .setDesc("Used with CRM weight to compute Performance Goals.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.5")
+          .setValue(
+            String(this.plugin.settings.healthPerformanceGoalsIssuesWeight),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthPerformanceGoalsIssuesWeight = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Performance Goals mix: CRM weight")
+      .setDesc("Used with Issues weight to compute Performance Goals.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.5")
+          .setValue(
+            String(this.plugin.settings.healthPerformanceGoalsCrmWeight),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthPerformanceGoalsCrmWeight = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Product Engagement mix: Meeting weight")
+      .setDesc("Used with Sentiment weight to compute Product Engagement.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.7")
+          .setValue(
+            String(this.plugin.settings.healthProductEngagementMeetingWeight),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthProductEngagementMeetingWeight = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Product Engagement mix: Sentiment weight")
+      .setDesc("Used with Meeting weight to compute Product Engagement.")
+      .addText((text) =>
+        text
+          .setPlaceholder("0.3")
+          .setValue(
+            String(this.plugin.settings.healthProductEngagementSentimentWeight),
+          )
+          .onChange(async (value) => {
+            const num = parseFloat(value);
+            if (!isNaN(num) && num >= 0 && num <= 1) {
+              this.plugin.settings.healthProductEngagementSentimentWeight = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Tier threshold: healthy minimum")
+      .setDesc("Score at or above this is marked healthy.")
+      .addText((text) =>
+        text
+          .setPlaceholder("67")
+          .setValue(String(this.plugin.settings.healthTierHealthyMin))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthTierHealthyMin = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Tier threshold: at-risk minimum")
+      .setDesc("Score at or above this (but below healthy) is marked at-risk.")
+      .addText((text) =>
+        text
+          .setPlaceholder("34")
+          .setValue(String(this.plugin.settings.healthTierAtRiskMin))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num >= 0 && num <= 100) {
+              this.plugin.settings.healthTierAtRiskMin = num;
+              await this.plugin.savePluginSettings();
+            }
+          }),
+      );
+
     const slackOutboundTest = new Setting(containerEl)
       .setName("Test Slack outbound")
       .setDesc("Verify your Slack bot can post messages.");
@@ -844,7 +1072,9 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
       btn.setButtonText("Test").onClick(async () => {
         const token = this.plugin.settings.slackBotToken;
         if (!token) {
-          new Notice("Configure a Slack bot token first (in the Slack section above).");
+          new Notice(
+            "Configure a Slack bot token first (in the Slack section above).",
+          );
           return;
         }
         btn.setButtonText("Testing...");
@@ -860,8 +1090,12 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
             new Notice("Slack outbound: Connected — bot can post messages.");
             slackOutboundTest.setDesc("Connected ✓");
           } else {
-            new Notice("Slack outbound: Connection failed. Check bot token and chat:write scope.");
-            slackOutboundTest.setDesc("Connection failed — check token and scopes.");
+            new Notice(
+              "Slack outbound: Connection failed. Check bot token and chat:write scope.",
+            );
+            slackOutboundTest.setDesc(
+              "Connection failed — check token and scopes.",
+            );
           }
         } catch {
           new Notice("Slack outbound: Connection failed.");
@@ -924,6 +1158,23 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.notionCustomerAsksDbId)
           .onChange(async (value) => {
             this.plugin.settings.notionCustomerAsksDbId = value.trim();
+            await this.plugin.savePluginSettings();
+          }),
+      );
+
+    const notionSettings = this.plugin.settings as typeof this.plugin.settings & {
+      notionIncidentsDbId: string;
+    };
+
+    new Setting(containerEl)
+      .setName("Notion incidents database ID")
+      .setDesc("Database ID where structured incident records are added as pages.")
+      .addText((text) =>
+        text
+          .setPlaceholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+          .setValue(notionSettings.notionIncidentsDbId)
+          .onChange(async (value) => {
+            notionSettings.notionIncidentsDbId = value.trim();
             await this.plugin.savePluginSettings();
           }),
       );
@@ -1158,16 +1409,19 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
         "Imports team config, resets sync state, runs full sync, then re-links notes.",
       )
       .addButton((btn) =>
-        btn.setButtonText("Run setup").setCta().onClick(async () => {
-          btn.setButtonText("Running...");
-          btn.setDisabled(true);
-          try {
-            await this.plugin.runTeamOneStepSetup();
-          } finally {
-            btn.setButtonText("Run setup");
-            btn.setDisabled(false);
-          }
-        }),
+        btn
+          .setButtonText("Run setup")
+          .setCta()
+          .onClick(async () => {
+            btn.setButtonText("Running...");
+            btn.setDisabled(true);
+            try {
+              await this.plugin.runTeamOneStepSetup();
+            } finally {
+              btn.setButtonText("Run setup");
+              btn.setDisabled(false);
+            }
+          }),
       );
   }
 }

@@ -27,6 +27,18 @@ import { calculateHealthScore, updateHealthScoreInContent } from "./profiles";
 import { LinearClient } from "./linear";
 import { ASK_ADORA_VIEW_TYPE, AskAdoraView } from "./ask-adora-view";
 import { OutboundNotifier, formatNotifyResult } from "./notifier";
+import {
+  buildAutomationLogFilePath,
+  buildAutomationLogsFolder,
+  renderAutomationAuditBlock,
+  renderAutomationAuditFile,
+} from "./automation-audit";
+import { buildRecommendationQueueFolder } from "./recommendation-queue";
+import {
+  IncidentReviewItem,
+  RecommendationReviewItem,
+  renderReviewSummary,
+} from "./reporting";
 
 export default class GranolaAdoraPlugin extends Plugin {
   settings: GranolaAdoraSettings = DEFAULT_SETTINGS;
@@ -253,6 +265,12 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "granola-customer-asks-to-linear",
+      name: "Create Linear issues from recent customer asks",
+      callback: () => this.autoCreateLinearIssuesFromCustomerAsks(),
+    });
+
+    this.addCommand({
       id: "granola-post-digest-slack",
       name: "Post latest digest to Slack",
       callback: () => this.postLatestDigestOutbound(),
@@ -268,6 +286,12 @@ export default class GranolaAdoraPlugin extends Plugin {
       id: "granola-post-asks-notion",
       name: "Publish customer asks to Notion",
       callback: () => this.postCustomerAsksOutbound(),
+    });
+
+    this.addCommand({
+      id: "granola-generate-review-summary",
+      name: "Generate bot review summary",
+      callback: () => this.generateReviewSummary(),
     });
 
     this.addCommand({
@@ -326,6 +350,10 @@ export default class GranolaAdoraPlugin extends Plugin {
       syncSharedDocs: this.settings.syncSharedDocs,
       syncWorkspaceLists: this.settings.syncWorkspaceLists,
       syncLinear: this.settings.syncLinear,
+      autoCreateLinearFromCustomerAsks:
+        this.settings.autoCreateLinearFromCustomerAsks,
+      autoCreateLinearFromCustomerAsksDryRun:
+        this.settings.autoCreateLinearFromCustomerAsksDryRun,
       linearFolderName: this.settings.linearFolderName,
       syncFigma: this.settings.syncFigma,
       designsFolderName: this.settings.designsFolderName,
@@ -338,6 +366,7 @@ export default class GranolaAdoraPlugin extends Plugin {
       slackFolderName: this.settings.slackFolderName,
       syncGithub: this.settings.syncGithub,
       githubOrg: this.settings.githubOrg,
+      githubRepoAllowlist: [...this.settings.githubRepoAllowlist],
       githubFolderName: this.settings.githubFolderName,
       syncGoogleDrive: this.settings.syncGoogleDrive,
       googleDriveFolderId: this.settings.googleDriveFolderId,
@@ -345,6 +374,25 @@ export default class GranolaAdoraPlugin extends Plugin {
       syncHubspot: this.settings.syncHubspot,
       hubspotFolderName: this.settings.hubspotFolderName,
       healthScoreEnabled: this.settings.healthScoreEnabled,
+      healthWeightCustomerSatisfaction:
+        this.settings.healthWeightCustomerSatisfaction,
+      healthWeightPerformanceGoals: this.settings.healthWeightPerformanceGoals,
+      healthWeightProductEngagement:
+        this.settings.healthWeightProductEngagement,
+      healthCustomerSatisfactionSentimentWeight:
+        this.settings.healthCustomerSatisfactionSentimentWeight,
+      healthCustomerSatisfactionIssuesWeight:
+        this.settings.healthCustomerSatisfactionIssuesWeight,
+      healthPerformanceGoalsIssuesWeight:
+        this.settings.healthPerformanceGoalsIssuesWeight,
+      healthPerformanceGoalsCrmWeight:
+        this.settings.healthPerformanceGoalsCrmWeight,
+      healthProductEngagementMeetingWeight:
+        this.settings.healthProductEngagementMeetingWeight,
+      healthProductEngagementSentimentWeight:
+        this.settings.healthProductEngagementSentimentWeight,
+      healthTierHealthyMin: this.settings.healthTierHealthyMin,
+      healthTierAtRiskMin: this.settings.healthTierAtRiskMin,
       decisionsFolderName: this.settings.decisionsFolderName,
       releaseNotesFolderName: this.settings.releaseNotesFolderName,
       outboundEnabled: this.settings.outboundEnabled,
@@ -352,6 +400,8 @@ export default class GranolaAdoraPlugin extends Plugin {
       notifySlackEnabled: this.settings.notifySlackEnabled,
       notifyNotionEnabled: this.settings.notifyNotionEnabled,
       healthAlertThreshold: this.settings.healthAlertThreshold,
+      notionIncidentsDbId: this.settings.notionIncidentsDbId,
+      sourceSyncBudgets: structuredClone(this.settings.sourceSyncBudgets),
     };
 
     const exportPath = normalizePath(
@@ -362,7 +412,9 @@ export default class GranolaAdoraPlugin extends Plugin {
     if (existing instanceof TFile) {
       await this.app.vault.modify(existing, payload);
     } else {
-      const setupFolder = normalizePath(`${this.settings.baseFolderPath}/_setup`);
+      const setupFolder = normalizePath(
+        `${this.settings.baseFolderPath}/_setup`,
+      );
       if (!this.app.vault.getAbstractFileByPath(setupFolder)) {
         await this.app.vault.createFolder(setupFolder);
       }
@@ -471,8 +523,8 @@ export default class GranolaAdoraPlugin extends Plugin {
       const hasAccessToken = Boolean(this.settings.googleDriveAccessToken);
       const hasRefreshFlow = Boolean(
         this.settings.googleDriveClientId &&
-          this.settings.googleDriveClientSecret &&
-          this.settings.googleDriveRefreshToken,
+        this.settings.googleDriveClientSecret &&
+        this.settings.googleDriveRefreshToken,
       );
       if (!hasAccessToken && !hasRefreshFlow) {
         missing.push("Google Drive OAuth credentials");
@@ -513,6 +565,8 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("syncSharedDocs");
     apply("syncWorkspaceLists");
     apply("syncLinear");
+    apply("autoCreateLinearFromCustomerAsks");
+    apply("autoCreateLinearFromCustomerAsksDryRun");
     apply("linearFolderName");
     apply("syncFigma");
     apply("designsFolderName");
@@ -525,6 +579,7 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("slackFolderName");
     apply("syncGithub");
     apply("githubOrg");
+    apply("githubRepoAllowlist");
     apply("githubFolderName");
     apply("syncGoogleDrive");
     apply("googleDriveFolderId");
@@ -532,6 +587,17 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("syncHubspot");
     apply("hubspotFolderName");
     apply("healthScoreEnabled");
+    apply("healthWeightCustomerSatisfaction");
+    apply("healthWeightPerformanceGoals");
+    apply("healthWeightProductEngagement");
+    apply("healthCustomerSatisfactionSentimentWeight");
+    apply("healthCustomerSatisfactionIssuesWeight");
+    apply("healthPerformanceGoalsIssuesWeight");
+    apply("healthPerformanceGoalsCrmWeight");
+    apply("healthProductEngagementMeetingWeight");
+    apply("healthProductEngagementSentimentWeight");
+    apply("healthTierHealthyMin");
+    apply("healthTierAtRiskMin");
     apply("decisionsFolderName");
     apply("releaseNotesFolderName");
     apply("outboundEnabled");
@@ -539,6 +605,8 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("notifySlackEnabled");
     apply("notifyNotionEnabled");
     apply("healthAlertThreshold");
+    apply("notionIncidentsDbId");
+    apply("sourceSyncBudgets");
 
     this.updateTaggerConfig();
     this.restartAutoSync();
@@ -638,7 +706,10 @@ export default class GranolaAdoraPlugin extends Plugin {
     view.focusInput();
   }
 
-  async askAdora(messages: AskAdoraMessage[], context: string): Promise<string> {
+  async askAdora(
+    messages: AskAdoraMessage[],
+    context: string,
+  ): Promise<string> {
     const ai = this.requireAI();
     if (!ai) {
       throw new Error(
@@ -734,6 +805,9 @@ export default class GranolaAdoraPlugin extends Plugin {
 
       this.firePostSyncAlerts().catch((e: unknown) =>
         console.error("Post-sync alerts failed:", e),
+      );
+      this.autoCreateLinearIssuesFromCustomerAsks().catch((e: unknown) =>
+        console.error("Auto Linear tickets from asks failed:", e),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -845,12 +919,7 @@ export default class GranolaAdoraPlugin extends Plugin {
       bodyLines.push("");
     }
 
-    const content = [
-      ...fmLines,
-      ...bodyLines,
-      aiOutput,
-      "",
-    ].join("\n");
+    const content = [...fmLines, ...bodyLines, aiOutput, ""].join("\n");
 
     const existing = this.app.vault.getAbstractFileByPath(filePath);
     if (existing instanceof TFile) {
@@ -1156,6 +1225,64 @@ export default class GranolaAdoraPlugin extends Plugin {
     return [];
   }
 
+  private normalizeLinearAskKey(input: string): string {
+    return input
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .substring(0, 120);
+  }
+
+  private askImpactToPriority(
+    impact: "high" | "medium" | "low" | undefined,
+  ): number {
+    if (impact === "high") return 2;
+    if (impact === "low") return 4;
+    return 3;
+  }
+
+  private buildHealthFromFrontmatter(
+    fm: Record<string, unknown>,
+  ): import("./types").HealthScore | null {
+    const scoreRaw = fm.health_score;
+    if (typeof scoreRaw !== "number") return null;
+
+    const tierRaw = fm.health_tier;
+    const tier: import("./types").HealthScore["tier"] =
+      tierRaw === "healthy" || tierRaw === "at-risk" || tierRaw === "critical"
+        ? tierRaw
+        : "at-risk";
+
+    const customerSatisfaction =
+      typeof fm.renewal_customer_satisfaction === "number"
+        ? fm.renewal_customer_satisfaction
+        : typeof fm.sentiment === "number"
+          ? fm.sentiment
+          : scoreRaw;
+
+    return {
+      score: scoreRaw,
+      tier,
+      customer_satisfaction: customerSatisfaction,
+      performance_goals:
+        typeof fm.renewal_performance_goals === "number"
+          ? fm.renewal_performance_goals
+          : scoreRaw,
+      product_engagement:
+        typeof fm.renewal_product_engagement === "number"
+          ? fm.renewal_product_engagement
+          : scoreRaw,
+      meeting_frequency:
+        typeof fm.meeting_frequency === "number" ? fm.meeting_frequency : 0,
+      open_issues: typeof fm.open_issues === "number" ? fm.open_issues : 0,
+      sentiment: typeof fm.sentiment === "number" ? fm.sentiment : undefined,
+      last_calculated:
+        typeof fm.health_last_calculated === "string"
+          ? fm.health_last_calculated
+          : new Date().toISOString(),
+    };
+  }
+
   private async generateTopCustomerAsks(): Promise<void> {
     const ai = this.requireAI();
     if (!ai) return;
@@ -1242,7 +1369,9 @@ export default class GranolaAdoraPlugin extends Plugin {
         `${this.settings.baseFolderPath}/${this.settings.ideasFolderName}/${safeName}.md`,
       );
 
-      await this.writeAINote(filePath, title, "extracted-ideas", result, [activeFile.path]);
+      await this.writeAINote(filePath, title, "extracted-ideas", result, [
+        activeFile.path,
+      ]);
       new Notice("Ideas extracted!");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
@@ -1367,6 +1496,29 @@ export default class GranolaAdoraPlugin extends Plugin {
             )
               ? "customer"
               : undefined,
+          },
+          {
+            componentWeights: {
+              customerSatisfaction: settings.healthWeightCustomerSatisfaction,
+              performanceGoals: settings.healthWeightPerformanceGoals,
+              productEngagement: settings.healthWeightProductEngagement,
+            },
+            customerSatisfactionWeights: {
+              sentiment: settings.healthCustomerSatisfactionSentimentWeight,
+              issues: settings.healthCustomerSatisfactionIssuesWeight,
+            },
+            performanceGoalsWeights: {
+              issues: settings.healthPerformanceGoalsIssuesWeight,
+              crm: settings.healthPerformanceGoalsCrmWeight,
+            },
+            productEngagementWeights: {
+              meetings: settings.healthProductEngagementMeetingWeight,
+              sentiment: settings.healthProductEngagementSentimentWeight,
+            },
+            tiers: {
+              healthyMin: settings.healthTierHealthyMin,
+              atRiskMin: settings.healthTierAtRiskMin,
+            },
           },
         );
 
@@ -1551,11 +1703,17 @@ export default class GranolaAdoraPlugin extends Plugin {
       .filter((f) => f.path.startsWith(decisionsFolderPath + "/"));
 
     if (decisionFiles.length === 0) {
-      new Notice("No decision notes found. Extract decisions from a meeting first.");
+      new Notice(
+        "No decision notes found. Extract decisions from a meeting first.",
+      );
       return;
     }
 
-    const unlinkedDecisions: { file: TFile; title: string; description: string }[] = [];
+    const unlinkedDecisions: {
+      file: TFile;
+      title: string;
+      description: string;
+    }[] = [];
     for (const file of decisionFiles) {
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (fm?.linear_issue_id) continue;
@@ -1588,62 +1746,364 @@ export default class GranolaAdoraPlugin extends Plugin {
     }
 
     const teamId = teams[0].id;
-    let created = 0;
+    const teamKey = teams[0].key;
 
-    new Notice(`Creating ${unlinkedDecisions.length} Linear issue(s) from decisions...`);
+    // Only create one issue at a time to avoid ticket bloat
+    const dec = unlinkedDecisions[0];
+    const remaining = unlinkedDecisions.length - 1;
 
-    for (const dec of unlinkedDecisions) {
+    new Notice(
+      `Creating Linear issue for: "${dec.title}" (team ${teamKey})...`,
+    );
+
+    try {
+      const issue = await client.createIssue({
+        teamId,
+        title: `[Decision] ${dec.title}`,
+        description: dec.description,
+        priority: 3,
+      });
+
+      const content = await this.app.vault.read(dec.file);
+      const updated = content.replace(
+        /^---\n/,
+        `---\nlinear_issue_id: "${issue.identifier}"\nlinear_issue_url: "${issue.url}"\n`,
+      );
+      await this.app.vault.modify(dec.file, updated);
+
+      const moreMsg = remaining > 0 ? ` (${remaining} more unlinked)` : "";
+      new Notice(
+        `Created ${issue.identifier}: [Decision] ${dec.title}${moreMsg}`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error(`Failed to create Linear issue for ${dec.title}:`, msg);
+      new Notice(`Failed to create Linear issue: ${msg}`);
+    }
+  }
+
+  private async autoCreateLinearIssuesFromCustomerAsks(): Promise<void> {
+    if (
+      !this.settings.autoCreateLinearFromCustomerAsks ||
+      !this.settings.aiEnabled ||
+      !this.settings.claudeApiKey
+    ) {
+      return;
+    }
+
+    const isDryRun = this.settings.autoCreateLinearFromCustomerAsksDryRun;
+    if (
+      !isDryRun &&
+      (!this.settings.syncLinear || !this.settings.linearApiKey)
+    ) {
+      return;
+    }
+
+    const ai = new AICortex(
+      this.settings.claudeApiKey,
+      this.settings.aiModelFast,
+      this.settings.aiModelDeep,
+    );
+
+    const syncCutoffMs = Date.now() - 2 * 60 * 60 * 1000;
+    const recentCustomerMeetings = this.getMeetingFiles().filter((file) => {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const customers = this.frontmatterArray(fm?.customers);
+      if (customers.length === 0) return false;
+
+      const syncedAt =
+        typeof fm?.synced === "string" ? Date.parse(fm.synced) : NaN;
+      if (!Number.isNaN(syncedAt)) {
+        return syncedAt >= syncCutoffMs;
+      }
+      return file.stat.mtime >= syncCutoffMs;
+    });
+
+    if (recentCustomerMeetings.length === 0) {
+      return;
+    }
+
+    let linearClient: LinearClient | null = null;
+    let teamId: string | null = null;
+    if (!isDryRun) {
+      linearClient = new LinearClient(this.settings.linearApiKey);
+      let teams: { id: string; name: string; key: string }[] = [];
       try {
-        const issue = await client.createIssue({
-          teamId,
-          title: `[Decision] ${dec.title}`,
-          description: dec.description,
-          priority: 3,
-        });
-
-        const content = await this.app.vault.read(dec.file);
-        const updated = content.replace(
-          /^---\n/,
-          `---\nlinear_issue_id: "${issue.identifier}"\nlinear_issue_url: "${issue.url}"\n`,
-        );
-        await this.app.vault.modify(dec.file, updated);
-        created++;
+        teams = await linearClient.fetchTeams();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unknown error";
-        console.error(`Failed to create Linear issue for ${dec.title}:`, msg);
+        console.error("Failed to fetch Linear teams for customer asks:", err);
+        return;
+      }
+      if (teams.length === 0) return;
+      teamId = teams[0].id;
+    }
+
+    const maxIssuesPerSync = 3;
+    let created = 0;
+    let dryRunCandidates = 0;
+    let inspectedMeetings = 0;
+    let settingsDirty = false;
+    const seenKeys = new Set<string>();
+    const auditLines: string[] = [];
+
+    for (const meeting of recentCustomerMeetings.slice(0, 12)) {
+      if (created >= maxIssuesPerSync) break;
+      inspectedMeetings++;
+
+      const fm = this.app.metadataCache.getFileCache(meeting)?.frontmatter;
+      const customers = this.frontmatterArray(fm?.customers);
+      const primaryCustomer = customers[0] ?? "Unknown Customer";
+
+      const rawContent = await this.app.vault.read(meeting);
+      const body = rawContent.replace(/^---[\s\S]*?---/, "").trim();
+      if (body.length === 0) continue;
+
+      const asks = (await ai.extractCustomerAsksFromMeeting(body)).slice(0, 3);
+
+      for (const ask of asks) {
+        if (created >= maxIssuesPerSync) break;
+
+        const customer = ask.requestedBy || primaryCustomer;
+        const key = `linear-customer-ask:${this.normalizeLinearAskKey(customer)}:${this.normalizeLinearAskKey(ask.summary)}`;
+
+        if (seenKeys.has(key) || this.settings.notifiedItems[key]) {
+          continue;
+        }
+
+        const title = `[Customer Ask] ${customer} — ${ask.summary}`.substring(
+          0,
+          240,
+        );
+        const description = [
+          isDryRun
+            ? "Dry-run candidate from Granola sync (no Linear issue created)."
+            : "Auto-created from Granola sync.",
+          "",
+          `- Customer: ${customer}`,
+          `- Impact: ${ask.impact ?? "medium"}`,
+          `- Source meeting: [[${meeting.path.replace(/\.md$/, "")}]]`,
+          "",
+          "## Ask",
+          ask.summary,
+          "",
+          "## Evidence",
+          ask.evidence,
+        ].join("\n");
+
+        if (isDryRun) {
+          seenKeys.add(key);
+          dryRunCandidates++;
+          auditLines.push(
+            `- [DRY RUN] ${title} (priority ${this.askImpactToPriority(ask.impact)}) from ${meeting.path}`,
+          );
+          continue;
+        }
+
+        try {
+          const issue = await linearClient!.createIssue({
+            teamId: teamId!,
+            title,
+            description,
+            priority: this.askImpactToPriority(ask.impact),
+          });
+          seenKeys.add(key);
+          this.settings.notifiedItems[key] = new Date().toISOString();
+          settingsDirty = true;
+          created++;
+          auditLines.push(
+            `- [CREATED] ${issue.identifier} — ${title} from ${meeting.path}`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            `Failed creating Linear issue for ask '${ask.summary}':`,
+            err,
+          );
+          auditLines.push(
+            `- [FAILED] ${title} from ${meeting.path} (${message})`,
+          );
+        }
       }
     }
 
-    new Notice(
-      created > 0
-        ? `Created ${created} Linear issue${created > 1 ? "s" : ""} from decisions.`
-        : "Failed to create Linear issues. Check console for details.",
+    if (auditLines.length > 0) {
+      await this.appendLinearAskAutomationLog(
+        inspectedMeetings,
+        isDryRun,
+        created,
+        dryRunCandidates,
+        auditLines,
+      );
+    }
+
+    if (settingsDirty) {
+      await this.savePluginSettings();
+      new Notice(
+        `Auto-created ${created} Linear ask ticket${created === 1 ? "" : "s"} from ${inspectedMeetings} recent meeting${inspectedMeetings === 1 ? "" : "s"}.`,
+      );
+      return;
+    }
+
+    if (isDryRun && dryRunCandidates > 0) {
+      new Notice(
+        `Dry run found ${dryRunCandidates} customer ask ticket candidate${dryRunCandidates === 1 ? "" : "s"} across ${inspectedMeetings} recent meeting${inspectedMeetings === 1 ? "" : "s"}.`,
+      );
+    }
+  }
+
+  private async appendLinearAskAutomationLog(
+    inspectedMeetings: number,
+    isDryRun: boolean,
+    createdCount: number,
+    dryRunCount: number,
+    detailLines: string[],
+  ): Promise<void> {
+    const logsFolder = normalizePath(
+      buildAutomationLogsFolder(
+        this.settings.baseFolderPath,
+        this.settings.digestsFolderName,
+      ),
     );
+
+    if (!this.app.vault.getAbstractFileByPath(logsFolder)) {
+      await this.app.vault.createFolder(logsFolder);
+    }
+
+    const day = new Date().toISOString().split("T")[0];
+    const filePath = normalizePath(
+      buildAutomationLogFilePath(
+        this.settings.baseFolderPath,
+        this.settings.digestsFolderName,
+        "linear-customer-asks-sync-log",
+        day,
+      ),
+    );
+    const now = new Date().toISOString();
+    const block = renderAutomationAuditBlock({
+      timestamp: now,
+      mode: isDryRun ? "dry-run" : "live",
+      summaryLines: [
+        `Meetings inspected: ${inspectedMeetings}`,
+        isDryRun
+          ? `Dry run candidates: ${dryRunCount}`
+          : `Created issues: ${createdCount}`,
+      ],
+      detailLines,
+    });
+
+    const existing = this.app.vault.getAbstractFileByPath(filePath);
+    if (existing instanceof TFile) {
+      const current = await this.app.vault.read(existing);
+      await this.app.vault.modify(existing, `${current.trimEnd()}\n\n${block}`);
+      return;
+    }
+
+    const content = renderAutomationAuditFile(
+      "linear-customer-asks-sync",
+      "Linear Customer Ask Sync Log",
+      day,
+      block,
+    );
+    await this.app.vault.create(filePath, content);
+  }
+
+  private getRecommendationQueueFiles(): TFile[] {
+    const prefix = `${buildRecommendationQueueFolder(this.settings.baseFolderPath)}/`;
+    return this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => file.path.startsWith(prefix));
+  }
+
+  private getRecommendationReviewItems(): RecommendationReviewItem[] {
+    return this.getRecommendationQueueFiles()
+      .map((file) => this.app.metadataCache.getFileCache(file)?.frontmatter)
+      .filter((fm): fm is Record<string, unknown> => !!fm)
+      .map((fm) => ({
+        title: typeof fm.title === "string" ? fm.title : "Untitled Recommendation",
+        targetKind: fm.target_kind === "skill" ? "skill" : "command",
+        reviewState:
+          typeof fm.review_state === "string" ? fm.review_state : "candidate",
+        confidenceScore:
+          typeof fm.confidence_score === "number" ? fm.confidence_score : 0,
+      }));
+  }
+
+  private getIncidentReviewItems(): IncidentReviewItem[] {
+    return this.app.vault
+      .getMarkdownFiles()
+      .map((file) => this.app.metadataCache.getFileCache(file)?.frontmatter)
+      .filter((fm): fm is Record<string, unknown> => !!fm)
+      .filter((fm) => fm.type === "incident-record" || fm.type === "incident")
+      .map((fm) => ({
+        title: typeof fm.title === "string" ? fm.title : "Untitled Incident",
+        severity: typeof fm.severity === "string" ? fm.severity : "unknown",
+        status: typeof fm.status === "string" ? fm.status : "unknown",
+        repo: typeof fm.repo === "string" ? fm.repo : "unknown",
+        learningSummary:
+          typeof fm.learning_summary === "string" ? fm.learning_summary : undefined,
+      }));
+  }
+
+  private async generateReviewSummary(): Promise<void> {
+    const recommendations = this.getRecommendationReviewItems();
+    const incidents = this.getIncidentReviewItems();
+    const generatedAt = new Date().toISOString();
+    const filePath = normalizePath(
+      `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/bot-review-summary--${generatedAt.split("T")[0]}.md`,
+    );
+
+    const content = [
+      "---",
+      'type: "review-summary"',
+      `generated_at: "${generatedAt}"`,
+      `recommendation_count: ${recommendations.length}`,
+      `incident_count: ${incidents.length}`,
+      "---",
+      "",
+      renderReviewSummary({
+        generatedAt,
+        recommendations,
+        incidents,
+      }),
+      "",
+    ].join("\n");
+
+    const existing = this.app.vault.getAbstractFileByPath(filePath);
+    if (existing instanceof TFile) {
+      await this.app.vault.modify(existing, content);
+    } else {
+      await this.app.vault.create(filePath, content);
+    }
+
+    new Notice("Bot review summary generated.");
   }
 
   private async firePostSyncAlerts(): Promise<void> {
-    if (!this.settings.outboundEnabled || !this.settings.isDesignatedBrain) return;
-    if (!this.settings.notifySlackEnabled || !this.settings.slackHealthAlertChannelId) return;
+    if (!this.settings.outboundEnabled || !this.settings.isDesignatedBrain)
+      return;
+    if (
+      !this.settings.notifySlackEnabled ||
+      !this.settings.slackHealthAlertChannelId
+    )
+      return;
 
     const customersFolderPath = `${this.settings.baseFolderPath}/${this.settings.customersFolderName}`;
     const customerFiles = this.app.vault
       .getMarkdownFiles()
       .filter((f) => f.path.startsWith(customersFolderPath + "/"));
 
-    const scores: { customer: string; health: import("./types").HealthScore }[] = [];
+    const scores: {
+      customer: string;
+      health: import("./types").HealthScore;
+    }[] = [];
     for (const file of customerFiles) {
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (fm?.health_score !== undefined) {
+        const health = this.buildHealthFromFrontmatter(fm);
+        if (!health) continue;
         scores.push({
           customer: fm.company ?? file.basename,
-          health: {
-            score: fm.health_score,
-            tier: fm.health_tier ?? "unknown",
-            meeting_frequency: fm.meeting_frequency ?? 0,
-            open_issues: fm.open_issues ?? 0,
-            sentiment: fm.sentiment,
-            last_calculated: fm.health_last_calculated ?? new Date().toISOString(),
-          },
+          health,
         });
       }
     }
@@ -1682,8 +2142,12 @@ export default class GranolaAdoraPlugin extends Plugin {
       const amount = fm.amount ?? "unknown";
       const stage = fm.deal_stage ?? "unknown";
       const companies = fm.related_companies ?? [];
-      const companyStr = Array.isArray(companies) ? companies.join(", ") : String(companies);
-      lines.push(`Deal: ${name} | Amount: ${amount} | Stage: ${stage} | Companies: ${companyStr}`);
+      const companyStr = Array.isArray(companies)
+        ? companies.join(", ")
+        : String(companies);
+      lines.push(
+        `Deal: ${name} | Amount: ${amount} | Stage: ${stage} | Companies: ${companyStr}`,
+      );
     }
 
     for (const file of companyFiles.slice(0, 50)) {
@@ -1693,7 +2157,9 @@ export default class GranolaAdoraPlugin extends Plugin {
       const revenue = fm.annual_revenue ?? fm.annualRevenue;
       const employees = fm.number_of_employees ?? fm.numberOfEmployees;
       if (revenue || employees) {
-        lines.push(`Company: ${name} | Annual Revenue: ${revenue ?? "unknown"} | Employees: ${employees ?? "unknown"}`);
+        lines.push(
+          `Company: ${name} | Annual Revenue: ${revenue ?? "unknown"} | Employees: ${employees ?? "unknown"}`,
+        );
       }
     }
 
@@ -1704,7 +2170,10 @@ export default class GranolaAdoraPlugin extends Plugin {
     const digestFolder = `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/`;
     const digestFiles = this.app.vault
       .getMarkdownFiles()
-      .filter((f) => f.path.startsWith(digestFolder) && f.basename.startsWith("Week of"))
+      .filter(
+        (f) =>
+          f.path.startsWith(digestFolder) && f.basename.startsWith("Week of"),
+      )
       .sort((a, b) => b.stat.mtime - a.stat.mtime);
 
     if (digestFiles.length === 0) {
@@ -1718,7 +2187,10 @@ export default class GranolaAdoraPlugin extends Plugin {
 
     this.outboundNotifier.rebuildClients();
     new Notice("Posting digest to outbound channels...");
-    const result = await this.outboundNotifier.notifyDigest(latest.basename, body);
+    const result = await this.outboundNotifier.notifyDigest(
+      latest.basename,
+      body,
+    );
     new Notice(formatNotifyResult(result));
   }
 
@@ -1733,26 +2205,26 @@ export default class GranolaAdoraPlugin extends Plugin {
       return;
     }
 
-    const scores: { customer: string; health: import("./types").HealthScore }[] = [];
+    const scores: {
+      customer: string;
+      health: import("./types").HealthScore;
+    }[] = [];
     for (const file of customerFiles) {
       const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
       if (fm?.health_score !== undefined) {
+        const health = this.buildHealthFromFrontmatter(fm);
+        if (!health) continue;
         scores.push({
           customer: fm.company ?? file.basename,
-          health: {
-            score: fm.health_score,
-            tier: fm.health_tier ?? "unknown",
-            meeting_frequency: fm.meeting_frequency ?? 0,
-            open_issues: fm.open_issues ?? 0,
-            sentiment: fm.sentiment,
-            last_calculated: fm.health_last_calculated ?? new Date().toISOString(),
-          },
+          health,
         });
       }
     }
 
     if (scores.length === 0) {
-      new Notice("No health scores found. Run 'Recalculate health scores' first.");
+      new Notice(
+        "No health scores found. Run 'Recalculate health scores' first.",
+      );
       return;
     }
 
@@ -1766,7 +2238,11 @@ export default class GranolaAdoraPlugin extends Plugin {
     const digestFolder = `${this.settings.baseFolderPath}/${this.settings.digestsFolderName}/`;
     const asksFiles = this.app.vault
       .getMarkdownFiles()
-      .filter((f) => f.path.startsWith(digestFolder) && f.basename.startsWith("Customer Asks"))
+      .filter(
+        (f) =>
+          f.path.startsWith(digestFolder) &&
+          f.basename.startsWith("Customer Asks"),
+      )
       .sort((a, b) => b.stat.mtime - a.stat.mtime);
 
     if (asksFiles.length === 0) {
@@ -1780,7 +2256,10 @@ export default class GranolaAdoraPlugin extends Plugin {
 
     this.outboundNotifier.rebuildClients();
     new Notice("Publishing customer asks to outbound channels...");
-    const result = await this.outboundNotifier.notifyCustomerAsks(latest.basename, body);
+    const result = await this.outboundNotifier.notifyCustomerAsks(
+      latest.basename,
+      body,
+    );
     new Notice(formatNotifyResult(result));
   }
 }

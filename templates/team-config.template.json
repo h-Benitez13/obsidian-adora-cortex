@@ -33,13 +33,24 @@
   "slackFolderName": "Slack",
   "syncGithub": false,
   "githubOrg": "",
+  "githubRepoAllowlist": [],
   "githubFolderName": "GitHub",
   "syncGoogleDrive": false,
   "googleDriveFolderId": "",
   "googleDriveFolderName": "Google Drive",
   "syncHubspot": false,
   "hubspotFolderName": "HubSpot",
+  "sourceSyncBudgets": {
+    "granola": { "maxContainersPerRun": 50, "maxItemsPerContainer": 100, "maxItemsPerRun": 500 },
+    "linear": { "maxContainersPerRun": 25, "maxItemsPerContainer": 250, "maxItemsPerRun": 1000 },
+    "slack": { "maxContainersPerRun": 25, "maxItemsPerContainer": 200, "maxItemsPerRun": 1000 },
+    "github": { "maxContainersPerRun": 20, "maxItemsPerContainer": 100, "maxItemsPerRun": 1000 },
+    "gdrive": { "maxContainersPerRun": 10, "maxItemsPerContainer": 100, "maxItemsPerRun": 500 },
+    "hubspot": { "maxContainersPerRun": 10, "maxItemsPerContainer": 250, "maxItemsPerRun": 1000 },
+    "notion": { "maxContainersPerRun": 10, "maxItemsPerContainer": 100, "maxItemsPerRun": 500 }
+  },
   "healthScoreEnabled": false,
   "decisionsFolderName": "Decisions",
-  "releaseNotesFolderName": "Releases"
+  "releaseNotesFolderName": "Releases",
+  "notionIncidentsDbId": ""
 }

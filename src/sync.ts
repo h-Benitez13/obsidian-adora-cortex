@@ -20,6 +20,12 @@ import {
 } from "./profiles";
 import { AICortex } from "./ai";
 import {
+  buildSourceRegistry,
+  mergeLatestUpdatedAt,
+  selectGitHubReposForSync,
+  shouldProcessEntityByUpdatedAt,
+} from "./source-registry";
+import {
   FigmaFile,
   GoogleDriveFile,
   GitHubPR,
@@ -186,7 +192,11 @@ export class SyncEngine {
       settings.figmaTeamId
     ) {
       try {
-        result.figmaFiles = await this.withTimeout(this.syncFigmaFiles(), 30000, "Figma");
+        result.figmaFiles = await this.withTimeout(
+          this.syncFigmaFiles(),
+          30000,
+          "Figma",
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         result.errors.push(`Figma sync failed: ${message}`);
@@ -239,7 +249,10 @@ export class SyncEngine {
           "GoogleDrive",
         );
         const nextAccessToken = driveClient.getAccessToken();
-        if (nextAccessToken && nextAccessToken !== settings.googleDriveAccessToken) {
+        if (
+          nextAccessToken &&
+          nextAccessToken !== settings.googleDriveAccessToken
+        ) {
           settings.googleDriveAccessToken = nextAccessToken;
         }
       } catch (err) {
@@ -718,18 +731,43 @@ export class SyncEngine {
   private async syncGitHubPRs(githubClient: GitHubClient): Promise<number> {
     const settings = this.getSettings();
     const githubFolder = `${settings.baseFolderPath}/${settings.githubFolderName}`;
+    const githubRegistry = buildSourceRegistry(settings).github;
     await this.ensureFolder(githubFolder);
 
-    const repos = await githubClient.fetchOrgRepos(settings.githubOrg);
+    const repos = selectGitHubReposForSync(
+      await githubClient.fetchOrgRepos(settings.githubOrg),
+      settings,
+    );
     let prCount = 0;
 
     for (const repo of repos) {
+      if (prCount >= githubRegistry.budget.maxItemsPerRun) {
+        break;
+      }
+
       const prs = await githubClient.fetchPullRequests(
         repo.owner.login,
         repo.name,
       );
+      const checkpointKey = `repo:${repo.full_name}`;
+      const lastSeenUpdatedAt =
+        githubRegistry.checkpoint.entityUpdatedAt[checkpointKey];
+      let latestRepoUpdatedAt = lastSeenUpdatedAt;
+      const prsToProcess = prs
+        .filter((pr) => {
+          latestRepoUpdatedAt = mergeLatestUpdatedAt(
+            latestRepoUpdatedAt,
+            pr.updatedAt,
+          );
+          return shouldProcessEntityByUpdatedAt(pr.updatedAt, lastSeenUpdatedAt);
+        })
+        .slice(0, githubRegistry.budget.maxItemsPerContainer);
 
-      for (const pr of prs) {
+      for (const pr of prsToProcess) {
+        if (prCount >= githubRegistry.budget.maxItemsPerRun) {
+          break;
+        }
+
         const fileName = sanitizeFileName(`${repo.name}--PR-${pr.number}`);
         const filePath = normalizePath(`${githubFolder}/${fileName}.md`);
         const existingFile = this.app.vault.getAbstractFileByPath(filePath);
@@ -759,7 +797,14 @@ export class SyncEngine {
         }
         prCount++;
       }
+
+      if (latestRepoUpdatedAt) {
+        githubRegistry.checkpoint.entityUpdatedAt[checkpointKey] =
+          latestRepoUpdatedAt;
+      }
     }
+
+    githubRegistry.checkpoint.lastSuccessfulSyncAt = new Date().toISOString();
 
     return prCount;
   }
@@ -809,12 +854,17 @@ export class SyncEngine {
     return [...fm, ...body].join("\n");
   }
 
-  private async syncGoogleDriveDocs(client: GoogleDriveClient): Promise<number> {
+  private async syncGoogleDriveDocs(
+    client: GoogleDriveClient,
+  ): Promise<number> {
     const settings = this.getSettings();
     const folderPath = `${settings.baseFolderPath}/${settings.googleDriveFolderName}`;
     await this.ensureFolder(folderPath);
 
-    const docs = await client.fetchGoogleDocsInFolder(settings.googleDriveFolderId, 100);
+    const docs = await client.fetchGoogleDocsInFolder(
+      settings.googleDriveFolderId,
+      100,
+    );
 
     let count = 0;
     for (const doc of docs) {
@@ -844,7 +894,10 @@ export class SyncEngine {
     return count;
   }
 
-  private renderGoogleDriveNote(doc: GoogleDriveFile, plainText: string): string {
+  private renderGoogleDriveNote(
+    doc: GoogleDriveFile,
+    plainText: string,
+  ): string {
     const fm = [
       "---",
       `type: "google-doc"`,
@@ -874,9 +927,7 @@ export class SyncEngine {
     return [...fm, ...body].join("\n");
   }
 
-  private async syncHubSpotData(
-    client: HubSpotClient,
-  ): Promise<{
+  private async syncHubSpotData(client: HubSpotClient): Promise<{
     contacts: number;
     companies: number;
     deals: number;
@@ -933,11 +984,13 @@ export class SyncEngine {
 
     let count = 0;
     for (const contact of contacts) {
-      const title = contact.fullName || contact.email || `Contact ${contact.id}`;
+      const title =
+        contact.fullName || contact.email || `Contact ${contact.id}`;
       const fileName = sanitizeFileName(title);
       const filePath = normalizePath(`${folderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-      const updatedAt = contact.updatedAt ?? contact.createdAt ?? new Date().toISOString();
+      const updatedAt =
+        contact.updatedAt ?? contact.createdAt ?? new Date().toISOString();
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -951,7 +1004,10 @@ export class SyncEngine {
       const associatedCompanies = contact.associatedCompanyIds
         .map((id) => companiesById.get(id)?.name)
         .filter((name): name is string => Boolean(name));
-      const content = this.renderHubSpotContactNote(contact, associatedCompanies);
+      const content = this.renderHubSpotContactNote(
+        contact,
+        associatedCompanies,
+      );
       if (existingFile instanceof TFile) {
         await this.app.vault.modify(existingFile, content);
       } else {
@@ -963,17 +1019,22 @@ export class SyncEngine {
     return count;
   }
 
-  private async syncHubSpotCompanies(companies: HubSpotCompany[]): Promise<number> {
+  private async syncHubSpotCompanies(
+    companies: HubSpotCompany[],
+  ): Promise<number> {
     const settings = this.getSettings();
     const folderPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies`;
     await this.ensureFolder(folderPath);
 
     let count = 0;
     for (const company of companies) {
-      const fileName = sanitizeFileName(company.name || `Company ${company.id}`);
+      const fileName = sanitizeFileName(
+        company.name || `Company ${company.id}`,
+      );
       const filePath = normalizePath(`${folderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-      const updatedAt = company.updatedAt ?? company.createdAt ?? new Date().toISOString();
+      const updatedAt =
+        company.updatedAt ?? company.createdAt ?? new Date().toISOString();
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -1010,7 +1071,8 @@ export class SyncEngine {
       const fileName = sanitizeFileName(deal.name || `Deal ${deal.id}`);
       const filePath = normalizePath(`${folderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-      const updatedAt = deal.updatedAt ?? deal.createdAt ?? new Date().toISOString();
+      const updatedAt =
+        deal.updatedAt ?? deal.createdAt ?? new Date().toISOString();
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -1025,9 +1087,15 @@ export class SyncEngine {
         .map((id) => companiesById.get(id)?.name)
         .filter((name): name is string => Boolean(name));
       const contactNames = deal.associatedContactIds
-        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .map(
+          (id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email,
+        )
         .filter((name): name is string => Boolean(name));
-      const content = this.renderHubSpotDealNote(deal, companyNames, contactNames);
+      const content = this.renderHubSpotDealNote(
+        deal,
+        companyNames,
+        contactNames,
+      );
       if (existingFile instanceof TFile) {
         await this.app.vault.modify(existingFile, content);
       } else {
@@ -1051,10 +1119,13 @@ export class SyncEngine {
 
     let count = 0;
     for (const meeting of meetings) {
-      const fileName = sanitizeFileName(meeting.title || `Meeting ${meeting.id}`);
+      const fileName = sanitizeFileName(
+        meeting.title || `Meeting ${meeting.id}`,
+      );
       const filePath = normalizePath(`${folderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-      const updatedAt = meeting.updatedAt ?? meeting.createdAt ?? new Date().toISOString();
+      const updatedAt =
+        meeting.updatedAt ?? meeting.createdAt ?? new Date().toISOString();
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -1069,7 +1140,9 @@ export class SyncEngine {
         .map((id) => companiesById.get(id)?.name)
         .filter((name): name is string => Boolean(name));
       const contactNames = meeting.associatedContactIds
-        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .map(
+          (id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email,
+        )
         .filter((name): name is string => Boolean(name));
       const contactEmails = meeting.associatedContactIds
         .map((id) => contactsById.get(id)?.email)
@@ -1107,10 +1180,13 @@ export class SyncEngine {
 
     let count = 0;
     for (const ticket of tickets) {
-      const fileName = sanitizeFileName(ticket.subject || `Ticket ${ticket.id}`);
+      const fileName = sanitizeFileName(
+        ticket.subject || `Ticket ${ticket.id}`,
+      );
       const filePath = normalizePath(`${folderPath}/${fileName}.md`);
       const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-      const updatedAt = ticket.updatedAt ?? ticket.createdAt ?? new Date().toISOString();
+      const updatedAt =
+        ticket.updatedAt ?? ticket.createdAt ?? new Date().toISOString();
 
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
@@ -1125,7 +1201,9 @@ export class SyncEngine {
         .map((id) => companiesById.get(id)?.name)
         .filter((name): name is string => Boolean(name));
       const contactNames = ticket.associatedContactIds
-        .map((id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email)
+        .map(
+          (id) => contactsById.get(id)?.fullName || contactsById.get(id)?.email,
+        )
         .filter((name): name is string => Boolean(name));
       const dealNames = ticket.associatedDealIds
         .map((id) => dealsById.get(id)?.name)
@@ -1544,6 +1622,29 @@ export class SyncEngine {
               ? "customer"
               : undefined,
           },
+          {
+            componentWeights: {
+              customerSatisfaction: settings.healthWeightCustomerSatisfaction,
+              performanceGoals: settings.healthWeightPerformanceGoals,
+              productEngagement: settings.healthWeightProductEngagement,
+            },
+            customerSatisfactionWeights: {
+              sentiment: settings.healthCustomerSatisfactionSentimentWeight,
+              issues: settings.healthCustomerSatisfactionIssuesWeight,
+            },
+            performanceGoalsWeights: {
+              issues: settings.healthPerformanceGoalsIssuesWeight,
+              crm: settings.healthPerformanceGoalsCrmWeight,
+            },
+            productEngagementWeights: {
+              meetings: settings.healthProductEngagementMeetingWeight,
+              sentiment: settings.healthProductEngagementSentimentWeight,
+            },
+            tiers: {
+              healthyMin: settings.healthTierHealthyMin,
+              atRiskMin: settings.healthTierAtRiskMin,
+            },
+          },
         );
         finalContent = updateHealthScoreInContent(finalContent, health);
       }
@@ -1701,11 +1802,21 @@ export class SyncEngine {
 
     if (settings.syncHubspot) {
       folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}`);
-      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Contacts`);
-      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies`);
-      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals`);
-      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Meetings`);
-      folders.push(`${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets`);
+      folders.push(
+        `${settings.baseFolderPath}/${settings.hubspotFolderName}/Contacts`,
+      );
+      folders.push(
+        `${settings.baseFolderPath}/${settings.hubspotFolderName}/Companies`,
+      );
+      folders.push(
+        `${settings.baseFolderPath}/${settings.hubspotFolderName}/Deals`,
+      );
+      folders.push(
+        `${settings.baseFolderPath}/${settings.hubspotFolderName}/Meetings`,
+      );
+      folders.push(
+        `${settings.baseFolderPath}/${settings.hubspotFolderName}/Tickets`,
+      );
     }
 
     folders.push(`${settings.baseFolderPath}/${settings.decisionsFolderName}`);
@@ -1746,7 +1857,10 @@ export class SyncEngine {
       );
       if (!this.app.vault.getAbstractFileByPath(filePath)) {
         const meetingsPath = `${settings.baseFolderPath}/${settings.meetingsFolderName}`;
-        await this.app.vault.create(filePath, renderCustomerNote(customer, meetingsPath));
+        await this.app.vault.create(
+          filePath,
+          renderCustomerNote(customer, meetingsPath),
+        );
       }
     }
   }
@@ -1800,17 +1914,26 @@ export function formatSyncResult(result: SyncResult): string {
   if (result.created > 0) parts.push(`${result.created} new`);
   if (result.updated > 0) parts.push(`${result.updated} updated`);
   if (result.skipped > 0) parts.push(`${result.skipped} unchanged`);
-  if (result.linearIssues > 0) parts.push(`${result.linearIssues} Linear issues`);
-  if (result.linearProjects > 0) parts.push(`${result.linearProjects} Linear projects`);
+  if (result.linearIssues > 0)
+    parts.push(`${result.linearIssues} Linear issues`);
+  if (result.linearProjects > 0)
+    parts.push(`${result.linearProjects} Linear projects`);
   if (result.figmaFiles > 0) parts.push(`${result.figmaFiles} Figma files`);
-  if (result.slackMessages > 0) parts.push(`${result.slackMessages} Slack messages`);
+  if (result.slackMessages > 0)
+    parts.push(`${result.slackMessages} Slack messages`);
   if (result.githubPRs > 0) parts.push(`${result.githubPRs} GitHub PRs`);
-  if (result.googleDriveDocs > 0) parts.push(`${result.googleDriveDocs} Google Drive docs`);
-  if (result.hubspotContacts > 0) parts.push(`${result.hubspotContacts} HubSpot contacts`);
-  if (result.hubspotCompanies > 0) parts.push(`${result.hubspotCompanies} HubSpot companies`);
-  if (result.hubspotDeals > 0) parts.push(`${result.hubspotDeals} HubSpot deals`);
-  if (result.hubspotMeetings > 0) parts.push(`${result.hubspotMeetings} HubSpot meetings`);
-  if (result.hubspotTickets > 0) parts.push(`${result.hubspotTickets} HubSpot tickets`);
+  if (result.googleDriveDocs > 0)
+    parts.push(`${result.googleDriveDocs} Google Drive docs`);
+  if (result.hubspotContacts > 0)
+    parts.push(`${result.hubspotContacts} HubSpot contacts`);
+  if (result.hubspotCompanies > 0)
+    parts.push(`${result.hubspotCompanies} HubSpot companies`);
+  if (result.hubspotDeals > 0)
+    parts.push(`${result.hubspotDeals} HubSpot deals`);
+  if (result.hubspotMeetings > 0)
+    parts.push(`${result.hubspotMeetings} HubSpot meetings`);
+  if (result.hubspotTickets > 0)
+    parts.push(`${result.hubspotTickets} HubSpot tickets`);
 
   const summary =
     parts.length > 0

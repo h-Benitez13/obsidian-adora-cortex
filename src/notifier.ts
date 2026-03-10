@@ -1,5 +1,10 @@
 import { requestUrl } from "obsidian";
 import { GranolaAdoraSettings, HealthScore } from "./types";
+import { CanonicalIncidentRecord } from "./learning-schema";
+import {
+  buildIncidentNotionProperties,
+  renderIncidentNotionMarkdown,
+} from "./notion-incidents";
 
 const SLACK_API = "https://slack.com/api";
 const NOTION_API = "https://api.notion.com/v1";
@@ -221,6 +226,34 @@ export class NotionPublisher {
     return result;
   }
 
+  async publishIncident(
+    databaseId: string,
+    incident: CanonicalIncidentRecord,
+  ): Promise<NotifyResult> {
+    const result = emptyResult();
+    const itemKey = `notion-incident:${incident.canonicalId}`;
+
+    if (this.wasAlreadyNotified(itemKey)) {
+      result.skipped++;
+      return result;
+    }
+
+    try {
+      await this.createDatabasePageWithProperties(
+        databaseId,
+        buildIncidentNotionProperties(incident) as unknown as Record<string, unknown>,
+        renderIncidentNotionMarkdown(incident),
+      );
+      await this.markNotified(itemKey);
+      result.sent++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      result.errors.push(`Notion incident publish failed: ${msg}`);
+    }
+
+    return result;
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       const response = await requestUrl({
@@ -273,6 +306,22 @@ export class NotionPublisher {
     title: string,
     markdownBody: string,
   ): Promise<void> {
+    await this.createDatabasePageWithProperties(
+      databaseId,
+      {
+        Name: {
+          title: [{ text: { content: title } }],
+        },
+      },
+      markdownBody,
+    );
+  }
+
+  private async createDatabasePageWithProperties(
+    databaseId: string,
+    properties: Record<string, unknown>,
+    markdownBody: string,
+  ): Promise<void> {
     const blocks = this.markdownToBlocks(markdownBody);
 
     const response = await requestUrl({
@@ -285,11 +334,7 @@ export class NotionPublisher {
       },
       body: JSON.stringify({
         parent: { database_id: databaseId },
-        properties: {
-          Name: {
-            title: [{ text: { content: title } }],
-          },
-        },
+        properties,
         children: blocks,
       }),
     });

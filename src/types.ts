@@ -310,10 +310,32 @@ export interface ReleaseNote {
 export interface HealthScore {
   score: number;
   tier: "healthy" | "at-risk" | "critical";
+  customer_satisfaction: number;
+  performance_goals: number;
+  product_engagement: number;
   meeting_frequency: number;
   open_issues: number;
   sentiment?: number;
   last_calculated: string;
+}
+
+export interface CustomerAskSignal {
+  summary: string;
+  evidence: string;
+  requestedBy?: string;
+  impact?: "high" | "medium" | "low";
+}
+
+export interface SourceSyncCheckpoint {
+  lastSuccessfulSyncAt: string | null;
+  cursors: Record<string, string>;
+  entityUpdatedAt: Record<string, string>;
+}
+
+export interface SourceSyncBudget {
+  maxContainersPerRun: number;
+  maxItemsPerContainer: number;
+  maxItemsPerRun: number;
 }
 
 // ── Plugin settings ──
@@ -339,6 +361,8 @@ export interface GranolaAdoraSettings {
   syncWorkspaceLists: boolean;
   linearApiKey: string;
   syncLinear: boolean;
+  autoCreateLinearFromCustomerAsks: boolean;
+  autoCreateLinearFromCustomerAsksDryRun: boolean;
   linearFolderName: string;
   figmaAccessToken: string;
   figmaTeamId: string;
@@ -354,6 +378,7 @@ export interface GranolaAdoraSettings {
   syncGithub: boolean;
   githubToken: string;
   githubOrg: string;
+  githubRepoAllowlist: string[];
   githubFolderName: string;
   syncGoogleDrive: boolean;
   googleDriveClientId: string;
@@ -366,6 +391,17 @@ export interface GranolaAdoraSettings {
   hubspotAccessToken: string;
   hubspotFolderName: string;
   healthScoreEnabled: boolean;
+  healthWeightCustomerSatisfaction: number;
+  healthWeightPerformanceGoals: number;
+  healthWeightProductEngagement: number;
+  healthCustomerSatisfactionSentimentWeight: number;
+  healthCustomerSatisfactionIssuesWeight: number;
+  healthPerformanceGoalsIssuesWeight: number;
+  healthPerformanceGoalsCrmWeight: number;
+  healthProductEngagementMeetingWeight: number;
+  healthProductEngagementSentimentWeight: number;
+  healthTierHealthyMin: number;
+  healthTierAtRiskMin: number;
   decisionsFolderName: string;
   releaseNotesFolderName: string;
   aiModelFast: string;
@@ -389,6 +425,9 @@ export interface GranolaAdoraSettings {
   notionDigestParentId: string;
   /** Notion database ID where customer asks are published. */
   notionCustomerAsksDbId: string;
+  notionIncidentsDbId: string;
+  sourceSyncCheckpoints: Record<string, SourceSyncCheckpoint>;
+  sourceSyncBudgets: Record<string, SourceSyncBudget>;
   /** Tracks already-notified items to prevent duplicates: key = itemType:itemId, value = ISO timestamp. */
   notifiedItems: Record<string, string>;
 }
@@ -409,6 +448,8 @@ export interface TeamConfigTemplate {
   syncSharedDocs: boolean;
   syncWorkspaceLists: boolean;
   syncLinear: boolean;
+  autoCreateLinearFromCustomerAsks: boolean;
+  autoCreateLinearFromCustomerAsksDryRun: boolean;
   linearFolderName: string;
   syncFigma: boolean;
   designsFolderName: string;
@@ -421,6 +462,7 @@ export interface TeamConfigTemplate {
   slackFolderName: string;
   syncGithub: boolean;
   githubOrg: string;
+  githubRepoAllowlist: string[];
   githubFolderName: string;
   syncGoogleDrive: boolean;
   googleDriveFolderId: string;
@@ -428,6 +470,17 @@ export interface TeamConfigTemplate {
   syncHubspot: boolean;
   hubspotFolderName: string;
   healthScoreEnabled: boolean;
+  healthWeightCustomerSatisfaction: number;
+  healthWeightPerformanceGoals: number;
+  healthWeightProductEngagement: number;
+  healthCustomerSatisfactionSentimentWeight: number;
+  healthCustomerSatisfactionIssuesWeight: number;
+  healthPerformanceGoalsIssuesWeight: number;
+  healthPerformanceGoalsCrmWeight: number;
+  healthProductEngagementMeetingWeight: number;
+  healthProductEngagementSentimentWeight: number;
+  healthTierHealthyMin: number;
+  healthTierAtRiskMin: number;
   decisionsFolderName: string;
   releaseNotesFolderName: string;
   outboundEnabled: boolean;
@@ -435,6 +488,8 @@ export interface TeamConfigTemplate {
   notifySlackEnabled: boolean;
   notifyNotionEnabled: boolean;
   healthAlertThreshold: number;
+  notionIncidentsDbId: string;
+  sourceSyncBudgets: Record<string, SourceSyncBudget>;
 }
 
 export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
@@ -469,6 +524,8 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   syncWorkspaceLists: true,
   linearApiKey: "",
   syncLinear: false,
+  autoCreateLinearFromCustomerAsks: false,
+  autoCreateLinearFromCustomerAsksDryRun: false,
   linearFolderName: "Linear",
   figmaAccessToken: "",
   figmaTeamId: "",
@@ -484,6 +541,7 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   syncGithub: false,
   githubToken: "",
   githubOrg: "",
+  githubRepoAllowlist: [],
   githubFolderName: "GitHub",
   syncGoogleDrive: false,
   googleDriveClientId: "",
@@ -496,6 +554,17 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   hubspotAccessToken: "",
   hubspotFolderName: "HubSpot",
   healthScoreEnabled: false,
+  healthWeightCustomerSatisfaction: 33.3,
+  healthWeightPerformanceGoals: 33.3,
+  healthWeightProductEngagement: 33.4,
+  healthCustomerSatisfactionSentimentWeight: 0.7,
+  healthCustomerSatisfactionIssuesWeight: 0.3,
+  healthPerformanceGoalsIssuesWeight: 0.5,
+  healthPerformanceGoalsCrmWeight: 0.5,
+  healthProductEngagementMeetingWeight: 0.7,
+  healthProductEngagementSentimentWeight: 0.3,
+  healthTierHealthyMin: 67,
+  healthTierAtRiskMin: 34,
   decisionsFolderName: "Decisions",
   releaseNotesFolderName: "Releases",
   aiModelFast: "claude-haiku-4-20250414",
@@ -510,6 +579,17 @@ export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
   notionApiToken: "",
   notionDigestParentId: "",
   notionCustomerAsksDbId: "",
+  notionIncidentsDbId: "",
+  sourceSyncCheckpoints: {},
+  sourceSyncBudgets: {
+    granola: { maxContainersPerRun: 50, maxItemsPerContainer: 100, maxItemsPerRun: 500 },
+    linear: { maxContainersPerRun: 25, maxItemsPerContainer: 250, maxItemsPerRun: 1000 },
+    slack: { maxContainersPerRun: 25, maxItemsPerContainer: 200, maxItemsPerRun: 1000 },
+    github: { maxContainersPerRun: 20, maxItemsPerContainer: 100, maxItemsPerRun: 1000 },
+    gdrive: { maxContainersPerRun: 10, maxItemsPerContainer: 100, maxItemsPerRun: 500 },
+    hubspot: { maxContainersPerRun: 10, maxItemsPerContainer: 250, maxItemsPerRun: 1000 },
+    notion: { maxContainersPerRun: 10, maxItemsPerContainer: 100, maxItemsPerRun: 500 },
+  },
   notifiedItems: {},
 };
 
