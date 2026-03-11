@@ -64,10 +64,14 @@ function capitalizeTier(tier: string): string {
 function buildHealthScoreSection(health: HealthScore): string {
   const tier = capitalizeTier(health.tier);
   const lines = [
-    `## Health Score: ${health.score}/100 (${tier})`,
+    `## Renewal Health Rubric (Notion-Aligned)`,
     "",
     "| Metric | Value |",
     "| --- | --- |",
+    `| Renewal Likelihood Score | ${health.score}/100 (${tier}) |`,
+    `| Customer Satisfaction | ${health.customer_satisfaction}/100 |`,
+    `| Performance Goals | ${health.performance_goals}/100 |`,
+    `| Product Engagement | ${health.product_engagement}/100 |`,
     `| Meeting Frequency (30d) | ${health.meeting_frequency} meetings |`,
     `| Open Issues | ${health.open_issues} issues |`,
   ];
@@ -79,6 +83,38 @@ function buildHealthScoreSection(health: HealthScore): string {
   return lines.join("\n");
 }
 
+export interface HealthWeightsConfig {
+  componentWeights: {
+    customerSatisfaction: number;
+    performanceGoals: number;
+    productEngagement: number;
+  };
+  customerSatisfactionWeights: {
+    sentiment: number;
+    issues: number;
+  };
+  performanceGoalsWeights: {
+    issues: number;
+    crm: number;
+  };
+  productEngagementWeights: {
+    meetings: number;
+    sentiment: number;
+  };
+  tiers: {
+    healthyMin: number;
+    atRiskMin: number;
+  };
+}
+
+const DEFAULT_WEIGHTS: HealthWeightsConfig = {
+  componentWeights: { customerSatisfaction: 0.34, performanceGoals: 0.33, productEngagement: 0.33 },
+  customerSatisfactionWeights: { sentiment: 0.6, issues: 0.4 },
+  performanceGoalsWeights: { issues: 0.5, crm: 0.5 },
+  productEngagementWeights: { meetings: 0.6, sentiment: 0.4 },
+  tiers: { healthyMin: 70, atRiskMin: 40 },
+};
+
 export function calculateHealthScore(
   customerName: string,
   meetings: TFile[],
@@ -89,7 +125,9 @@ export function calculateHealthScore(
     ticketCount: number;
     lifecycleStage?: string;
   },
+  weights?: HealthWeightsConfig,
 ): HealthScore {
+  const w = weights ?? DEFAULT_WEIGHTS;
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const customerLower = customerName.toLowerCase();
 
@@ -121,32 +159,44 @@ export function calculateHealthScore(
     }
   }
 
-  let score: number;
-  if (sentimentScore !== undefined && hubspot) {
-    score = Math.round(
-      meetingFrequencyScore * 0.25 +
-        issuesScore * 0.25 +
-        sentimentScore * 0.25 +
-        crmScore * 0.25,
-    );
-  } else if (sentimentScore !== undefined) {
-    score = Math.round(
-      meetingFrequencyScore * 0.33 + issuesScore * 0.33 + sentimentScore * 0.34,
-    );
-  } else if (hubspot) {
-    score = Math.round(
-      meetingFrequencyScore * 0.34 + issuesScore * 0.33 + crmScore * 0.33,
-    );
-  } else {
-    score = Math.round(meetingFrequencyScore * 0.5 + issuesScore * 0.5);
-  }
+  // Compute component scores using configurable sub-weights
+  const sentVal = sentimentScore ?? 50;
+  const csWeights = w.customerSatisfactionWeights;
+  const customer_satisfaction = Math.round(
+    sentVal * csWeights.sentiment + issuesScore * csWeights.issues,
+  );
+
+  const pgWeights = w.performanceGoalsWeights;
+  const performance_goals = Math.round(
+    issuesScore * pgWeights.issues + crmScore * pgWeights.crm,
+  );
+
+  const peWeights = w.productEngagementWeights;
+  const product_engagement = Math.round(
+    meetingFrequencyScore * peWeights.meetings + sentVal * peWeights.sentiment,
+  );
+
+  // Final weighted score from the three components
+  const cw = w.componentWeights;
+  const score = Math.round(
+    customer_satisfaction * cw.customerSatisfaction +
+      performance_goals * cw.performanceGoals +
+      product_engagement * cw.productEngagement,
+  );
 
   const tier: HealthScore["tier"] =
-    score >= 70 ? "healthy" : score >= 40 ? "at-risk" : "critical";
+    score >= w.tiers.healthyMin
+      ? "healthy"
+      : score >= w.tiers.atRiskMin
+        ? "at-risk"
+        : "critical";
 
   return {
     score,
     tier,
+    customer_satisfaction,
+    performance_goals,
+    product_engagement,
     meeting_frequency: meetingCount,
     open_issues: issueCount,
     sentiment: sentimentScore,
