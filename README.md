@@ -208,6 +208,42 @@ For the expanded checklist, edge cases, and settings validation, see [`TESTING.m
 - **Missing source data**: run digest, asks, or outbound workflows with no source notes and expect a friendly `Generate one first`-style message.
 - **Duplicate prevention**: run outbound or auto-ticket workflows twice and confirm they do not create duplicate issues or notifications.
 
+## Using Claude Desktop with the vault
+
+### Code tab (works out of the box)
+
+1. Open Claude Desktop and switch to the **Code** tab.
+2. Open or attach your cloned vault folder.
+3. Claude can read, search, and edit vault files directly.
+
+### Chat tab (requires MCP setup)
+
+The Chat tab doesn't have filesystem access by default. To enable it, add a **filesystem MCP server** to your Claude Desktop config.
+
+1. Open your Claude Desktop config file:
+   ```
+   ~/Library/Application Support/Claude/claude_desktop_config.json
+   ```
+2. Add (or merge) the `mcpServers` block, replacing the path with your local vault clone:
+   ```json
+   {
+     "mcpServers": {
+       "filesystem": {
+         "command": "npx",
+         "args": [
+           "-y",
+           "@modelcontextprotocol/server-filesystem",
+           "/path/to/your/adora-cortex-vault"
+         ]
+       }
+     }
+   }
+   ```
+3. **Quit and reopen Claude Desktop** for the config to take effect.
+4. In Chat, ask Claude to read a file from the vault to confirm it works.
+
+> **Requires:** Node.js (LTS recommended). Check with `node --version`.
+
 ## Docs
 
 - MCP setup and central-brain workflow: `docs/mcp-setup.md`
