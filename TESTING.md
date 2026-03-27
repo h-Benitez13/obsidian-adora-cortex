@@ -7,7 +7,7 @@ This checklist is for manual QA inside Obsidian after installing the plugin.
 Use a test vault with these conditions:
 
 1. The plugin is enabled.
-2. `Settings → Granola Adora` is open in a second pane for quick toggles.
+2. `Settings → Adora Cortex` is open in a second pane for quick toggles.
 3. You have at least a few meeting notes, customer notes, and optionally synced Linear / Slack / GitHub / HubSpot content.
 4. API keys are added only for the integrations you plan to validate.
 5. If you are testing outbound flows, use a safe Slack channel and a test Notion destination.
@@ -32,7 +32,7 @@ Use a test vault with these conditions:
 - **Expect**: Sync runs on the new interval, not the previous one.
 
 ### 3. Sync ribbon icon
-- **Run**: Click the `Sync Granola` ribbon icon.
+- **Run**: Click the `Sync Cortex` ribbon icon.
 - **Expect**: A sync notice appears and notes are created or updated.
 
 ### 4. Ask Adora ribbon icon
@@ -47,8 +47,8 @@ Use a test vault with these conditions:
 
 ## 2. Sync engine
 
-### 6. Core Granola sync
-- **Run**: `Sync meetings from Granola`
+### 6. Core sync
+- **Run**: `Sync meetings`
 - **Expect**: Notes appear under `Adora/Meetings/` and the completion notice shows created or updated counts.
 
 ### 7. Shared docs sync toggle
@@ -69,7 +69,7 @@ Use a test vault with these conditions:
 
 ### 11. Sync in progress guard
 - **Run**: Trigger sync twice quickly.
-- **Expect**: The second attempt shows `Granola: Sync already in progress.`
+- **Expect**: The second attempt shows `Cortex: Sync already in progress.`
 
 ### 12. Auth failure path
 - **Run**: Close or sign out of the Granola desktop session, then run sync.
@@ -93,7 +93,7 @@ Use a test vault with these conditions:
 
 ### 17. Google Drive sync
 - **Run**: Enable `syncGoogleDrive`, configure OAuth or access token + folder ID, then sync.
-- **Expect**: Drive reference notes appear under `Adora/Google Drive/`.
+- **Expect**: Drive folders or shared-drive roots sync recursively under `Adora/Google Drive/`; Google Docs and text-friendly files become notes, and supported binary files sync with attachment notes.
 
 ### 18. HubSpot sync
 - **Run**: Enable `syncHubspot`, add an access token, then sync.
@@ -345,7 +345,7 @@ Use a test vault with these conditions:
 
 If you only have 10 minutes, run these in order:
 
-1. `Sync meetings from Granola`
+1. `Sync meetings`
 2. `Open Ask Adora chat panel`
 3. `Generate weekly digest (AI)`
 4. `Analyze meeting themes (AI)`

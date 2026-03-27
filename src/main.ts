@@ -9,7 +9,7 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import {
-  GranolaAdoraSettings,
+  AdoraCortexSettings,
   DEFAULT_SETTINGS,
   Decision,
   TeamConfigTemplate,
@@ -19,7 +19,7 @@ import { GranolaApiClient } from "./api";
 import { AutoTagger } from "./tagger";
 import { SyncEngine, formatSyncResult } from "./sync";
 import { renderIdeaNote } from "./renderer";
-import { GranolaAdoraSettingTab } from "./settings-tab";
+import { AdoraCortexSettingTab } from "./settings-tab";
 import { IdeaFromMeetingModal } from "./modals";
 import { AICortex } from "./ai";
 import { Linker, formatLinkResult } from "./linker";
@@ -57,8 +57,8 @@ import {
 } from "./ticket-refinement";
 import { scoreEasyTicketHeuristics } from "./ticket-scoring";
 
-export default class GranolaAdoraPlugin extends Plugin {
-  settings: GranolaAdoraSettings = DEFAULT_SETTINGS;
+export default class AdoraCortexPlugin extends Plugin {
+  settings: AdoraCortexSettings = DEFAULT_SETTINGS;
   private api: GranolaApiClient = new GranolaApiClient();
   private tagger: AutoTagger = new AutoTagger([], []);
   private syncEngine!: SyncEngine;
@@ -85,9 +85,9 @@ export default class GranolaAdoraPlugin extends Plugin {
       () => this.savePluginSettings(),
     );
 
-    this.addSettingTab(new GranolaAdoraSettingTab(this.app, this));
+    this.addSettingTab(new AdoraCortexSettingTab(this.app, this));
 
-    this.addRibbonIcon("refresh-cw", "Sync Granola", () => {
+    this.addRibbonIcon("refresh-cw", "Sync Cortex", () => {
       this.runSync();
     });
     this.addRibbonIcon("message-square", "Ask Adora", () => {
@@ -100,45 +100,45 @@ export default class GranolaAdoraPlugin extends Plugin {
     );
 
     this.addCommand({
-      id: "granola-sync",
-      name: "Sync meetings from Granola",
+      id: "adora-cortex-sync",
+      name: "Sync meetings",
       callback: () => this.runSync(),
     });
 
     this.addCommand({
-      id: "granola-open-ask-adora",
+      id: "adora-cortex-open-ask-adora",
       name: "Open Ask Adora chat panel",
       callback: () => this.activateAskAdoraView(),
     });
     this.addCommand({
-      id: "granola-ask-adora-send",
+      id: "adora-cortex-ask-adora-send",
       name: "Ask Adora: Send message",
       callback: () => this.sendAskAdoraMessage(),
     });
     this.addCommand({
-      id: "granola-ask-adora-clear",
+      id: "adora-cortex-ask-adora-clear",
       name: "Ask Adora: Clear conversation",
       callback: () => this.clearAskAdoraConversation(),
     });
     this.addCommand({
-      id: "granola-ask-adora-save",
+      id: "adora-cortex-ask-adora-save",
       name: "Ask Adora: Save conversation",
       callback: () => this.saveAskAdoraConversation(),
     });
     this.addCommand({
-      id: "granola-ask-adora-new",
+      id: "adora-cortex-ask-adora-new",
       name: "Ask Adora: Start new conversation",
       callback: () => this.startAskAdoraConversation(),
     });
 
     this.addCommand({
-      id: "granola-create-idea",
+      id: "adora-cortex-create-idea",
       name: "Create idea from meeting",
       callback: () => this.createIdeaFromMeeting(),
     });
 
     this.addCommand({
-      id: "granola-full-resync",
+      id: "adora-cortex-full-resync",
       name: "Full re-sync (reset and re-import all)",
       callback: async () => {
         this.settings.lastSyncTimestamp = null;
@@ -149,55 +149,55 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "granola-prep-brief",
+      id: "adora-cortex-prep-brief",
       name: "Prepare customer brief (AI)",
       callback: () => this.generatePrepBrief(),
     });
 
     this.addCommand({
-      id: "granola-weekly-digest",
+      id: "adora-cortex-weekly-digest",
       name: "Generate weekly digest (AI)",
       callback: () => this.generateWeeklyDigest(),
     });
 
     this.addCommand({
-      id: "granola-detect-themes",
+      id: "adora-cortex-detect-themes",
       name: "Analyze meeting themes (AI)",
       callback: () => this.generateThemeAnalysis(),
     });
 
     this.addCommand({
-      id: "granola-customer-asks",
+      id: "adora-cortex-customer-asks",
       name: "Extract top customer asks (AI)",
       callback: () => this.generateTopCustomerAsks(),
     });
 
     this.addCommand({
-      id: "granola-extract-ideas",
+      id: "adora-cortex-extract-ideas",
       name: "Extract ideas from current note (AI)",
       callback: () => this.extractIdeasFromNote(),
     });
 
     this.addCommand({
-      id: "granola-auto-link",
+      id: "adora-cortex-auto-link",
       name: "Re-link all notes (cross-integration)",
       callback: () => this.runLinking(),
     });
 
     this.addCommand({
-      id: "granola-recalculate-health",
+      id: "adora-cortex-recalculate-health",
       name: "Recalculate all customer health scores",
       callback: () => this.recalculateHealthScores(),
     });
 
     this.addCommand({
-      id: "granola-generate-release-notes",
+      id: "adora-cortex-generate-release-notes",
       name: "Generate release notes",
       callback: () => this.generateReleaseNotes(),
     });
 
     this.addCommand({
-      id: "granola-extract-decisions",
+      id: "adora-cortex-extract-decisions",
       name: "Extract decisions from meeting",
       callback: async () => {
         const ai = this.requireAI();
@@ -247,7 +247,7 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "granola-log-decision",
+      id: "adora-cortex-log-decision",
       name: "Log a decision manually",
       callback: () => {
         const now = new Date().toISOString().split("T")[0];
@@ -276,67 +276,67 @@ export default class GranolaAdoraPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "granola-decisions-to-linear",
+      id: "adora-cortex-decisions-to-linear",
       name: "Create Linear issues from decisions",
       callback: () => this.createLinearIssuesFromDecisions(),
     });
 
     this.addCommand({
-      id: "granola-customer-asks-to-linear",
+      id: "adora-cortex-customer-asks-to-linear",
       name: "Create Linear issues from recent customer asks",
       callback: () => this.autoCreateLinearIssuesFromCustomerAsks(),
     });
 
     this.addCommand({
-      id: "granola-post-digest-slack",
+      id: "adora-cortex-post-digest-slack",
       name: "Post latest digest to Slack",
       callback: () => this.postLatestDigestOutbound(),
     });
 
     this.addCommand({
-      id: "granola-post-health-alerts",
+      id: "adora-cortex-post-health-alerts",
       name: "Post customer health alerts to Slack",
       callback: () => this.postHealthAlertsOutbound(),
     });
 
     this.addCommand({
-      id: "granola-post-asks-notion",
+      id: "adora-cortex-post-asks-notion",
       name: "Publish customer asks to Notion",
       callback: () => this.postCustomerAsksOutbound(),
     });
 
     this.addCommand({
-      id: "granola-generate-review-summary",
+      id: "adora-cortex-generate-review-summary",
       name: "Generate bot review summary",
       callback: () => this.generateReviewSummary(),
     });
 
     this.addCommand({
-      id: "granola-generate-recommendation-from-active-note",
+      id: "adora-cortex-generate-recommendation-from-active-note",
       name: "Generate bot recommendation from active note",
       callback: () => this.generateRecommendationFromActiveNote(),
     });
 
     this.addCommand({
-      id: "granola-publish-active-incident-notion",
+      id: "adora-cortex-publish-active-incident-notion",
       name: "Publish active incident to Notion",
       callback: () => this.publishActiveIncidentToNotion(),
     });
 
     this.addCommand({
-      id: "granola-export-config",
+      id: "adora-cortex-export-config",
       name: "Export team config template",
       callback: () => this.exportTeamConfigTemplate(),
     });
 
     this.addCommand({
-      id: "granola-import-config",
+      id: "adora-cortex-import-config",
       name: "Import team config from active file",
       callback: () => this.importTeamConfigFromActiveFile(),
     });
 
     this.addCommand({
-      id: "granola-team-one-step-setup",
+      id: "adora-cortex-team-one-step-setup",
       name: "Team one-step setup (import + full sync)",
       callback: () => this.runTeamOneStepSetup(),
     });
@@ -385,6 +385,7 @@ export default class GranolaAdoraPlugin extends Plugin {
         this.settings.autoCreateLinearFromCustomerAsksDryRun,
       linearFolderName: this.settings.linearFolderName,
       syncFigma: this.settings.syncFigma,
+      figmaTeamId: this.settings.figmaTeamId,
       designsFolderName: this.settings.designsFolderName,
       aiEnabled: this.settings.aiEnabled,
       aiModel: this.settings.aiModel,
@@ -427,8 +428,12 @@ export default class GranolaAdoraPlugin extends Plugin {
       outboundEnabled: this.settings.outboundEnabled,
       isDesignatedBrain: this.settings.isDesignatedBrain,
       notifySlackEnabled: this.settings.notifySlackEnabled,
+      slackDigestChannelId: this.settings.slackDigestChannelId,
+      slackHealthAlertChannelId: this.settings.slackHealthAlertChannelId,
       notifyNotionEnabled: this.settings.notifyNotionEnabled,
       healthAlertThreshold: this.settings.healthAlertThreshold,
+      notionDigestParentId: this.settings.notionDigestParentId,
+      notionCustomerAsksDbId: this.settings.notionCustomerAsksDbId,
       notionIncidentsDbId: this.settings.notionIncidentsDbId,
       sourceSyncBudgets: structuredClone(this.settings.sourceSyncBudgets),
     };
@@ -560,7 +565,7 @@ export default class GranolaAdoraPlugin extends Plugin {
       }
     }
     if (this.settings.syncHubspot && !this.settings.hubspotAccessToken) {
-      missing.push("HubSpot access token");
+      missing.push("HubSpot private app access token");
     }
     if (this.settings.aiEnabled && !this.settings.claudeApiKey) {
       missing.push("Claude API key");
@@ -574,7 +579,7 @@ export default class GranolaAdoraPlugin extends Plugin {
     const parsed = JSON.parse(raw) as Partial<TeamConfigTemplate>;
     const apply = <K extends keyof TeamConfigTemplate>(key: K): void => {
       if (parsed[key] !== undefined) {
-        (this.settings[key as keyof GranolaAdoraSettings] as unknown) =
+        (this.settings[key as keyof AdoraCortexSettings] as unknown) =
           parsed[key];
       }
     };
@@ -598,6 +603,7 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("autoCreateLinearFromCustomerAsksDryRun");
     apply("linearFolderName");
     apply("syncFigma");
+    apply("figmaTeamId");
     apply("designsFolderName");
     apply("aiEnabled");
     apply("aiModel");
@@ -632,8 +638,12 @@ export default class GranolaAdoraPlugin extends Plugin {
     apply("outboundEnabled");
     apply("isDesignatedBrain");
     apply("notifySlackEnabled");
+    apply("slackDigestChannelId");
+    apply("slackHealthAlertChannelId");
     apply("notifyNotionEnabled");
     apply("healthAlertThreshold");
+    apply("notionDigestParentId");
+    apply("notionCustomerAsksDbId");
     apply("notionIncidentsDbId");
     apply("sourceSyncBudgets");
 
@@ -809,14 +819,14 @@ export default class GranolaAdoraPlugin extends Plugin {
 
   private async runSync(): Promise<void> {
     if (this.isSyncing) {
-      new Notice("Granola: Sync already in progress.");
+      new Notice("Cortex: Sync already in progress.");
       return;
     }
 
     const authenticated = await this.api.ensureAuthenticated();
     if (!authenticated) {
       new Notice(
-        "Granola: Could not find local session. Make sure Granola desktop app is open and you're signed in.",
+        "Cortex: Could not find a local Granola session. Make sure the Granola desktop app is open and you're signed in.",
       );
       return;
     }
@@ -824,12 +834,12 @@ export default class GranolaAdoraPlugin extends Plugin {
     this.isSyncing = true;
 
     try {
-      new Notice("Granola: Starting sync...");
+      new Notice("Cortex: Starting sync...");
       const result = await this.syncEngine.sync();
       new Notice(formatSyncResult(result));
 
       if (result.errors.length > 0) {
-        console.error("Granola sync errors:", result.errors);
+        console.error("Cortex sync errors:", result.errors);
       }
 
       this.firePostSyncAlerts().catch((e: unknown) =>
@@ -840,8 +850,8 @@ export default class GranolaAdoraPlugin extends Plugin {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      new Notice(`Granola sync failed: ${message}`);
-      console.error("Granola sync failed:", err);
+      new Notice(`Cortex sync failed: ${message}`);
+      console.error("Cortex sync failed:", err);
     } finally {
       this.isSyncing = false;
     }
@@ -1905,8 +1915,8 @@ export default class GranolaAdoraPlugin extends Plugin {
         );
         const description = [
           isDryRun
-            ? "Dry-run candidate from Granola sync (no Linear issue created)."
-            : "Auto-created from Granola sync.",
+            ? "Dry-run candidate from Cortex sync (no Linear issue created)."
+            : "Auto-created from Cortex sync.",
           "",
           `- Customer: ${customer}`,
           `- Impact: ${ask.impact ?? "medium"}`,

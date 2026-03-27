@@ -201,6 +201,11 @@ export interface GoogleDriveFile {
   mimeType: string;
   modifiedTime: string;
   webViewLink: string;
+  fileExtension?: string;
+  shortcutDetails?: {
+    targetId: string;
+    targetMimeType?: string;
+  };
 }
 
 // ── HubSpot types ──
@@ -340,7 +345,7 @@ export interface SourceSyncBudget {
 
 // ── Plugin settings ──
 
-export interface GranolaAdoraSettings {
+export interface AdoraCortexSettings {
   syncIntervalMinutes: number;
   syncOnStartup: boolean;
   baseFolderPath: string;
@@ -452,6 +457,7 @@ export interface TeamConfigTemplate {
   autoCreateLinearFromCustomerAsksDryRun: boolean;
   linearFolderName: string;
   syncFigma: boolean;
+  figmaTeamId: string;
   designsFolderName: string;
   aiEnabled: boolean;
   aiModel: string;
@@ -486,13 +492,17 @@ export interface TeamConfigTemplate {
   outboundEnabled: boolean;
   isDesignatedBrain: boolean;
   notifySlackEnabled: boolean;
+  slackDigestChannelId: string;
+  slackHealthAlertChannelId: string;
   notifyNotionEnabled: boolean;
   healthAlertThreshold: number;
+  notionDigestParentId: string;
+  notionCustomerAsksDbId: string;
   notionIncidentsDbId: string;
   sourceSyncBudgets: Record<string, SourceSyncBudget>;
 }
 
-export const DEFAULT_SETTINGS: GranolaAdoraSettings = {
+export const DEFAULT_SETTINGS: AdoraCortexSettings = {
   syncIntervalMinutes: 30,
   syncOnStartup: true,
   baseFolderPath: "Adora",
@@ -603,7 +613,7 @@ export interface SyncResult {
   figmaFiles: number;
   slackMessages: number;
   githubPRs: number;
-  googleDriveDocs: number;
+  googleDriveItems: number;
   hubspotContacts: number;
   hubspotCompanies: number;
   hubspotDeals: number;

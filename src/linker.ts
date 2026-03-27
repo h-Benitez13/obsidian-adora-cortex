@@ -1,5 +1,5 @@
 import { App, TFile, normalizePath } from "obsidian";
-import { GranolaAdoraSettings } from "./types";
+import { AdoraCortexSettings } from "./types";
 
 interface LinkResult {
   meetingsLinked: number;
@@ -12,9 +12,9 @@ interface LinkResult {
 
 export class Linker {
   private app: App;
-  private getSettings: () => GranolaAdoraSettings;
+  private getSettings: () => AdoraCortexSettings;
 
-  constructor(app: App, getSettings: () => GranolaAdoraSettings) {
+  constructor(app: App, getSettings: () => AdoraCortexSettings) {
     this.app = app;
     this.getSettings = getSettings;
   }
@@ -409,7 +409,7 @@ export class Linker {
 
   private async enrichCustomer360(
     customerFile: TFile,
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): Promise<boolean> {
     const content = await this.app.vault.read(customerFile);
     const fm = this.app.metadataCache.getFileCache(customerFile)?.frontmatter;
@@ -458,7 +458,7 @@ export class Linker {
 
   private buildLinearIssuesSection(
     customerName: string,
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): string {
     const escaped = customerName.replace(/"/g, '\\"');
     const issuesPath = `${settings.baseFolderPath}/${settings.linearFolderName}/Issues`;
@@ -475,7 +475,7 @@ export class Linker {
 
   private buildFigmaDesignsSection(
     customerName: string,
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): string {
     const escaped = customerName.replace(/"/g, '\\"');
     const designsPath = `${settings.baseFolderPath}/${settings.designsFolderName}`;
@@ -490,7 +490,7 @@ export class Linker {
     ].join("\n");
   }
 
-  private buildSlackMessagesSection(settings: GranolaAdoraSettings): string {
+  private buildSlackMessagesSection(settings: AdoraCortexSettings): string {
     const slackPath = `${settings.baseFolderPath}/${settings.slackFolderName}`;
     return [
       "## Related Slack Messages\n",
@@ -503,7 +503,7 @@ export class Linker {
     ].join("\n");
   }
 
-  private buildHubSpotSection(settings: GranolaAdoraSettings): string {
+  private buildHubSpotSection(settings: AdoraCortexSettings): string {
     const hubspotPath = `${settings.baseFolderPath}/${settings.hubspotFolderName}`;
     return [
       "## Related HubSpot\n",

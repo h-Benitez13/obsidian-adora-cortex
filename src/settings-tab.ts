@@ -1,5 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type GranolaAdoraPlugin from "./main";
+import type AdoraCortexPlugin from "./main";
 import { FigmaClient } from "./figma";
 import { GoogleDriveClient } from "./gdrive";
 import { GitHubClient } from "./github";
@@ -9,10 +9,10 @@ import { SlackClient } from "./slack";
 import { Linker, formatLinkResult } from "./linker";
 import { SlackNotifier, NotionPublisher } from "./notifier";
 
-export class GranolaAdoraSettingTab extends PluginSettingTab {
-  plugin: GranolaAdoraPlugin;
+export class AdoraCortexSettingTab extends PluginSettingTab {
+  plugin: AdoraCortexPlugin;
 
-  constructor(app: App, plugin: GranolaAdoraPlugin) {
+  constructor(app: App, plugin: AdoraCortexPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -21,17 +21,17 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Granola for Adora" });
+    containerEl.createEl("h2", { text: "Adora Cortex" });
 
     const statusEl = containerEl.createEl("div", { cls: "setting-item" });
     const statusText = statusEl.createEl("p");
     this.plugin.checkAuth().then((connected) => {
       if (connected) {
-        statusText.setText("Granola: Connected");
+        statusText.setText("Cortex: Connected to Granola");
         statusText.style.color = "var(--text-success)";
       } else {
         statusText.setText(
-          "Granola: Not found — open Granola desktop app and sign in",
+          "Cortex: Granola desktop app not found — open it and sign in",
         );
         statusText.style.color = "var(--text-error)";
       }
@@ -101,7 +101,7 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Sync workspace folders")
       .setDesc(
-        "Import notes from Granola workspace folders (e.g. User Interviews, P+E, General).",
+        "Import notes from Granola workspace folders (e.g. User Interviews, P+E, General) into Adora Cortex.",
       )
       .addToggle((toggle) =>
         toggle
@@ -187,7 +187,7 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Auto-create Linear tickets from customer asks")
       .setDesc(
-        "After each Granola sync, detect explicit customer asks in recent notes/transcripts and open up to 3 deduped Linear issues.",
+        "After each Cortex sync, detect explicit customer asks in recent notes/transcripts and open up to 3 deduped Linear issues.",
       )
       .addToggle((toggle) =>
         toggle
@@ -480,7 +480,7 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("HubSpot access token")
       .setDesc(
-        "Private App token from HubSpot Settings → Integrations → Private Apps.",
+        "Use a HubSpot private app access token for API requests. Ask your HubSpot admin for the access token only — not a developer app ID and not a HubSpot CLI personal access key.",
       )
       .addText((text) =>
         text
@@ -498,13 +498,15 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
 
     const hubspotStatusSetting = new Setting(containerEl)
       .setName("Test HubSpot connection")
-      .setDesc("Verify your HubSpot token works.");
+      .setDesc(
+        "Verify your HubSpot access token works and has the required CRM read scopes.",
+      );
 
     hubspotStatusSetting.addButton((btn) =>
       btn.setButtonText("Test").onClick(async () => {
         const token = this.plugin.settings.hubspotAccessToken;
         if (!token) {
-          new Notice("HubSpot: Enter an access token first.");
+          new Notice("HubSpot: Enter a private app access token first.");
           return;
         }
         btn.setButtonText("Testing...");
@@ -518,13 +520,13 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
           } else {
             new Notice("HubSpot: Connection failed. Check your token/scopes.");
             hubspotStatusSetting.setDesc(
-              "Connection failed — check token and Private App scopes.",
+              "Connection failed — check the access token value and HubSpot CRM scopes.",
             );
           }
         } catch {
           new Notice("HubSpot: Connection failed.");
           hubspotStatusSetting.setDesc(
-            "Connection failed — check token and Private App scopes.",
+            "Connection failed — check the access token value and HubSpot CRM scopes.",
           );
         } finally {
           btn.setButtonText("Test");
@@ -546,7 +548,9 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync from Google Drive")
-      .setDesc("Import Google Docs from one Drive folder into your vault.")
+      .setDesc(
+        "Import one Drive folder recursively into your vault. Google Docs become notes; other supported files sync as notes or attachments.",
+      )
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.syncGoogleDrive)
@@ -558,7 +562,9 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Google Drive folder ID")
-      .setDesc("Folder ID to sync (from the Google Drive URL).")
+      .setDesc(
+        "Folder ID to sync recursively. Shared drive root URLs also work here.",
+      )
       .addText((text) =>
         text
           .setPlaceholder("1AbCdEf...")
@@ -653,32 +659,22 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
             this.plugin.settings.googleDriveRefreshToken,
             this.plugin.settings.googleDriveAccessToken,
           );
-          const ok = await client.testConnection(folderId);
-          if (ok) {
-            if (
-              client.getAccessToken() &&
-              client.getAccessToken() !==
-                this.plugin.settings.googleDriveAccessToken
-            ) {
-              this.plugin.settings.googleDriveAccessToken =
-                client.getAccessToken();
-              await this.plugin.savePluginSettings();
-            }
-            new Notice("Google Drive: Connection successful!");
-            driveStatusSetting.setDesc("Connected ✓");
-          } else {
-            new Notice(
-              "Google Drive: Connection failed. Check credentials and folder permissions.",
-            );
-            driveStatusSetting.setDesc(
-              "Connection failed — check credentials and folder access.",
-            );
+          await client.testConnection(folderId);
+          if (
+            client.getAccessToken() &&
+            client.getAccessToken() !== this.plugin.settings.googleDriveAccessToken
+          ) {
+            this.plugin.settings.googleDriveAccessToken =
+              client.getAccessToken();
+            await this.plugin.savePluginSettings();
           }
-        } catch {
-          new Notice("Google Drive: Connection failed.");
-          driveStatusSetting.setDesc(
-            "Connection failed — check credentials and folder access.",
-          );
+          new Notice("Google Drive: Connection successful!");
+          driveStatusSetting.setDesc("Connected ✓");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Check credentials and folder access.";
+          new Notice(`Google Drive: Connection failed — ${message}`);
+          driveStatusSetting.setDesc(`Connection failed — ${message}`);
         } finally {
           btn.setButtonText("Test");
           btn.setDisabled(false);
@@ -1220,7 +1216,7 @@ export class GranolaAdoraSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Base folder")
-      .setDesc("Root folder for all Granola content in your vault.")
+      .setDesc("Root folder for all Adora Cortex content in your vault.")
       .addText((text) =>
         text
           .setPlaceholder("Adora")

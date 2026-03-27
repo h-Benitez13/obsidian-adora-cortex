@@ -6,13 +6,13 @@ import {
   WorkspaceLeaf,
   setIcon,
 } from "obsidian";
-import type GranolaAdoraPlugin from "./main";
+import type AdoraCortexPlugin from "./main";
 import { AskAdoraMessage } from "./types";
 
-export const ASK_ADORA_VIEW_TYPE = "granola-ask-adora-view";
+export const ASK_ADORA_VIEW_TYPE = "adora-cortex-ask-adora-view";
 
 export class AskAdoraView extends ItemView {
-  private plugin: GranolaAdoraPlugin;
+  private plugin: AdoraCortexPlugin;
   private messages: AskAdoraMessage[] = [];
   private isSending = false;
   private currentConversationPath: string | null = null;
@@ -26,7 +26,7 @@ export class AskAdoraView extends ItemView {
   private includeRecentDigests = true;
   private recentMeetingCount = 10;
 
-  constructor(leaf: WorkspaceLeaf, plugin: GranolaAdoraPlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: AdoraCortexPlugin) {
     super(leaf);
     this.plugin = plugin;
   }

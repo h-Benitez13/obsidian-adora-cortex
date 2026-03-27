@@ -9,11 +9,11 @@ import {
   selectGitHubReposForSync,
   shouldProcessEntityByUpdatedAt,
 } from "../src/source-registry";
-import { DEFAULT_SETTINGS, GranolaAdoraSettings } from "../src/types";
+import { DEFAULT_SETTINGS, AdoraCortexSettings } from "../src/types";
 
 function createSettings(
-  overrides: Partial<GranolaAdoraSettings> = {},
-): GranolaAdoraSettings {
+  overrides: Partial<AdoraCortexSettings> = {},
+): AdoraCortexSettings {
   return {
     ...DEFAULT_SETTINGS,
     sourceSyncBudgets: {

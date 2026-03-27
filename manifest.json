@@ -1,9 +1,9 @@
 {
-  "id": "granola-adora",
-  "name": "Granola for Adora",
+  "id": "adora-cortex",
+  "name": "Adora Cortex",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Sync Granola meeting notes into Obsidian and build a connected knowledge graph for ideas, customer feedback, and priorities.",
+  "description": "Sync team context into Obsidian and build Adora's connected company brain across meetings, customers, and execution systems.",
   "author": "Adora AI",
   "authorUrl": "https://adora.ai",
   "isDesktopOnly": true

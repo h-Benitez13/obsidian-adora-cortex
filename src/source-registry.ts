@@ -1,6 +1,6 @@
 import { GitHubRepo } from "./github";
 import {
-  GranolaAdoraSettings,
+  AdoraCortexSettings,
   SourceSyncBudget,
   SourceSyncCheckpoint,
 } from "./types";
@@ -46,14 +46,14 @@ export function createEmptySourceSyncCheckpoint(): SourceSyncCheckpoint {
 }
 
 export function ensureSourceSyncBudget(
-  settings: GranolaAdoraSettings,
+  settings: AdoraCortexSettings,
   key: SourceRegistryKey,
 ): SourceSyncBudget {
   return settings.sourceSyncBudgets[key] ?? DEFAULT_SOURCE_SYNC_BUDGETS[key];
 }
 
 export function ensureSourceSyncCheckpoint(
-  settings: GranolaAdoraSettings,
+  settings: AdoraCortexSettings,
   key: SourceRegistryKey,
 ): SourceSyncCheckpoint {
   if (!settings.sourceSyncCheckpoints[key]) {
@@ -64,7 +64,7 @@ export function ensureSourceSyncCheckpoint(
 }
 
 export function buildSourceRegistry(
-  settings: GranolaAdoraSettings,
+  settings: AdoraCortexSettings,
 ): Record<SourceRegistryKey, SourceRegistryEntry> {
   return {
     granola: {
@@ -139,7 +139,7 @@ export function parseGitHubRepoAllowlist(
 
 export function selectGitHubReposForSync(
   repos: GitHubRepo[],
-  settings: GranolaAdoraSettings,
+  settings: AdoraCortexSettings,
 ): GitHubRepo[] {
   const allowlist = parseGitHubRepoAllowlist(
     settings.githubRepoAllowlist,

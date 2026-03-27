@@ -3,7 +3,14 @@ import { GranolaApiClient } from "./api";
 import { FigmaClient } from "./figma";
 import { LinearClient } from "./linear";
 import { GitHubClient } from "./github";
-import { GoogleDriveClient } from "./gdrive";
+import {
+  GOOGLE_DOCS_MIME_TYPE,
+  GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+  GoogleDriveClient,
+  GoogleDriveSyncPlan,
+  GoogleDriveSyncTarget,
+  getGoogleDriveSyncPlan,
+} from "./gdrive";
 import { HubSpotClient } from "./hubspot";
 import { SlackClient } from "./slack";
 import { AutoTagger } from "./tagger";
@@ -29,7 +36,7 @@ import {
   FigmaFile,
   GoogleDriveFile,
   GitHubPR,
-  GranolaAdoraSettings,
+  AdoraCortexSettings,
   GranolaDocument,
   GranolaDocumentList,
   HubSpotCompany,
@@ -52,14 +59,14 @@ export class SyncEngine {
   private app: App;
   private api: GranolaApiClient;
   private tagger: AutoTagger;
-  private getSettings: () => GranolaAdoraSettings;
+  private getSettings: () => AdoraCortexSettings;
   private saveSettings: () => Promise<void>;
 
   constructor(
     app: App,
     api: GranolaApiClient,
     tagger: AutoTagger,
-    getSettings: () => GranolaAdoraSettings,
+    getSettings: () => AdoraCortexSettings,
     saveSettings: () => Promise<void>,
   ) {
     this.app = app;
@@ -81,7 +88,7 @@ export class SyncEngine {
       figmaFiles: 0,
       slackMessages: 0,
       githubPRs: 0,
-      googleDriveDocs: 0,
+      googleDriveItems: 0,
       hubspotContacts: 0,
       hubspotCompanies: 0,
       hubspotDeals: 0,
@@ -243,8 +250,8 @@ export class SyncEngine {
           settings.googleDriveRefreshToken,
           settings.googleDriveAccessToken,
         );
-        result.googleDriveDocs = await this.withTimeout(
-          this.syncGoogleDriveDocs(driveClient),
+        result.googleDriveItems = await this.withTimeout(
+          this.syncGoogleDriveItems(driveClient),
           30000,
           "GoogleDrive",
         );
@@ -854,75 +861,267 @@ export class SyncEngine {
     return [...fm, ...body].join("\n");
   }
 
-  private async syncGoogleDriveDocs(
+  private async syncGoogleDriveItems(
     client: GoogleDriveClient,
   ): Promise<number> {
     const settings = this.getSettings();
     const folderPath = `${settings.baseFolderPath}/${settings.googleDriveFolderName}`;
+    const driveRegistry = buildSourceRegistry(settings).gdrive;
+    const target = await client.resolveSyncTarget(settings.googleDriveFolderId);
     await this.ensureFolder(folderPath);
 
-    const docs = await client.fetchGoogleDocsInFolder(
-      settings.googleDriveFolderId,
-      100,
+    return this.syncGoogleDriveFolder(
+      client,
+      target.rootId,
+      folderPath,
+      settings.googleDriveFolderName,
+      driveRegistry.budget.maxItemsPerRun,
+      driveRegistry.budget.maxItemsPerContainer,
+      target,
+    );
+  }
+
+  private async syncGoogleDriveFolder(
+    client: GoogleDriveClient,
+    folderId: string,
+    vaultPath: string,
+    drivePath: string,
+    remaining: number,
+    perFolderLimit: number,
+    target: GoogleDriveSyncTarget,
+  ): Promise<number> {
+    if (remaining <= 0) {
+      return 0;
+    }
+
+    const items = await client.fetchFolderItems(
+      folderId,
+      Math.min(remaining, perFolderLimit),
+      target,
     );
 
     let count = 0;
-    for (const doc of docs) {
-      const fileName = sanitizeFileName(doc.name);
-      const filePath = normalizePath(`${folderPath}/${fileName}.md`);
-      const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+    for (const item of items) {
+      if (count >= remaining) {
+        break;
+      }
 
+      if (item.mimeType === GOOGLE_DRIVE_FOLDER_MIME_TYPE) {
+        const childVaultPath = normalizePath(
+          `${vaultPath}/${sanitizeFileName(item.name)}`,
+        );
+        const childDrivePath = `${drivePath}/${item.name}`;
+        await this.ensureFolder(childVaultPath);
+        count += await this.syncGoogleDriveFolder(
+          client,
+          item.id,
+          childVaultPath,
+          childDrivePath,
+          remaining - count,
+          perFolderLimit,
+          target,
+        );
+        continue;
+      }
+
+      const plan = getGoogleDriveSyncPlan(item);
+      const notePath = this.buildGoogleDriveNotePath(item, vaultPath, plan);
+      const existingFile = this.app.vault.getAbstractFileByPath(notePath);
       if (existingFile instanceof TFile) {
         const existingContent = await this.app.vault.read(existingFile);
         const existingUpdated =
           this.extractFrontmatterField(existingContent, "updated") ?? "";
-        if (existingUpdated >= doc.modifiedTime) {
+        if (existingUpdated >= item.modifiedTime) {
           continue;
         }
       }
 
-      const plainText = await client.exportAsPlainText(doc.id);
-      const content = this.renderGoogleDriveNote(doc, plainText);
+      let contentBody: string | null = null;
+      let attachmentPath: string | null = null;
+
+      if (plan.mode === "content") {
+        const payload = plan.exportMimeType
+          ? await client.exportFile(item.id, plan.exportMimeType)
+          : await client.downloadFile(item.id);
+        contentBody = this.renderGoogleDriveContentBlock(
+          this.decodeGoogleDriveText(payload),
+          plan,
+        );
+      }
+
+      if (plan.mode === "attachment") {
+        const payload = plan.exportMimeType
+          ? await client.exportFile(item.id, plan.exportMimeType)
+          : await client.downloadFile(item.id);
+        attachmentPath = await this.writeGoogleDriveAttachment(
+          item,
+          vaultPath,
+          payload,
+          plan,
+        );
+      }
+
+      const content = this.renderGoogleDriveNote(
+        item,
+        drivePath,
+        plan,
+        contentBody,
+        attachmentPath,
+      );
 
       if (existingFile instanceof TFile) {
         await this.app.vault.modify(existingFile, content);
       } else {
-        await this.app.vault.create(filePath, content);
+        await this.app.vault.create(notePath, content);
       }
       count++;
     }
+
     return count;
+  }
+
+  private buildGoogleDriveNotePath(
+    doc: GoogleDriveFile,
+    folderPath: string,
+    plan: GoogleDriveSyncPlan,
+  ): string {
+    const fileName = sanitizeFileName(doc.name);
+    const isLegacyDocNote =
+      doc.mimeType === GOOGLE_DOCS_MIME_TYPE &&
+      plan.mode === "content" &&
+      plan.contentFormat === "markdown";
+    const suffix =
+      isLegacyDocNote && !fileName.toLowerCase().endsWith(".md")
+        ? ".md"
+        : ".drive.md";
+    return normalizePath(`${folderPath}/${fileName}${suffix}`);
+  }
+
+  private buildGoogleDriveAttachmentName(
+    doc: GoogleDriveFile,
+    plan: GoogleDriveSyncPlan,
+  ): string {
+    const fileName = sanitizeFileName(doc.name);
+    if (!plan.outputExtension) {
+      return fileName;
+    }
+    return fileName.toLowerCase().endsWith(plan.outputExtension.toLowerCase())
+      ? fileName
+      : `${fileName}${plan.outputExtension}`;
+  }
+
+  private async writeGoogleDriveAttachment(
+    doc: GoogleDriveFile,
+    folderPath: string,
+    payload: ArrayBuffer,
+    plan: GoogleDriveSyncPlan,
+  ): Promise<string> {
+    const attachmentsPath = normalizePath(`${folderPath}/_files`);
+    await this.ensureFolder(attachmentsPath);
+
+    const attachmentPath = normalizePath(
+      `${attachmentsPath}/${this.buildGoogleDriveAttachmentName(doc, plan)}`,
+    );
+    const existingFile = this.app.vault.getAbstractFileByPath(attachmentPath);
+
+    if (existingFile instanceof TFile) {
+      await this.app.vault.modifyBinary(existingFile, payload);
+    } else {
+      await this.app.vault.createBinary(attachmentPath, payload);
+    }
+
+    return attachmentPath;
+  }
+
+  private decodeGoogleDriveText(payload: ArrayBuffer): string {
+    return new TextDecoder("utf-8").decode(payload).replace(/^\uFEFF/, "");
+  }
+
+  private renderGoogleDriveContentBlock(
+    content: string,
+    plan: GoogleDriveSyncPlan,
+  ): string {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return "_No content available from export._";
+    }
+
+    switch (plan.contentFormat) {
+      case "markdown":
+        return trimmed;
+      case "csv":
+        return `\`\`\`csv\n${trimmed}\n\`\`\``;
+      case "json":
+        try {
+          return `\`\`\`json\n${JSON.stringify(JSON.parse(trimmed), null, 2)}\n\`\`\``;
+        } catch {
+          return `\`\`\`json\n${trimmed}\n\`\`\``;
+        }
+      case "code":
+        return `\`\`\`${plan.codeLanguage ?? "text"}\n${trimmed}\n\`\`\``;
+      case "text":
+      default:
+        return trimmed;
+    }
   }
 
   private renderGoogleDriveNote(
     doc: GoogleDriveFile,
-    plainText: string,
+    drivePath: string,
+    plan: GoogleDriveSyncPlan,
+    contentBody: string | null,
+    attachmentPath: string | null,
   ): string {
     const fm = [
       "---",
-      `type: "google-doc"`,
+      `type: "google-drive"`,
       `google_drive_id: "${escapeYaml(doc.id)}"`,
       `title: "${escapeYaml(doc.name)}"`,
       `updated: "${doc.modifiedTime}"`,
+      `mime_type: "${escapeYaml(doc.mimeType)}"`,
+      `sync_mode: "${plan.mode}"`,
+      `google_drive_path: "${escapeYaml(`${drivePath}/${doc.name}`)}"`,
       `url: "${escapeYaml(doc.webViewLink)}"`,
+      ...(attachmentPath
+        ? [`attachment_path: "${escapeYaml(attachmentPath)}"`]
+        : []),
       `tags:`,
       `  - "google-drive"`,
-      `  - "google-doc"`,
+      `  - "${plan.tag}"`,
       `synced: "${new Date().toISOString()}"`,
       "---",
     ];
 
-    const body = [
+    const body: string[] = [
       "",
       `# ${doc.name}`,
       "",
-      `[Open in Google Docs](${doc.webViewLink})`,
+      `[Open in Google Drive](${doc.webViewLink})`,
       "",
-      "## Content",
-      "",
-      plainText.trim() || "_No content available from export._",
-      "",
+      `- MIME type: \`${doc.mimeType}\``,
     ];
+
+    if (plan.note) {
+      body.push(`- Note: ${plan.note}`);
+    }
+
+    body.push("");
+
+    if (contentBody) {
+      body.push("## Content", "", contentBody, "");
+    } else if (attachmentPath) {
+      body.push("## Attachment", "", `[[${attachmentPath}|Open synced file]]`, "");
+      if (plan.embedAttachment) {
+        body.push(`![[${attachmentPath}]]`, "");
+      }
+    } else {
+      body.push(
+        "## Sync details",
+        "",
+        "_This file is indexed as metadata only right now._",
+        "",
+      );
+    }
 
     return [...fm, ...body].join("\n");
   }
@@ -1706,7 +1905,7 @@ export class SyncEngine {
   }
 
   private async gatherAllDocuments(
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
     result: SyncResult,
   ): Promise<GranolaDocument[]> {
     const seen = new Map<string, GranolaDocument>();
@@ -1757,7 +1956,7 @@ export class SyncEngine {
   }
 
   private async ensureFolderStructure(
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): Promise<void> {
     const folders = [
       settings.baseFolderPath,
@@ -1831,7 +2030,7 @@ export class SyncEngine {
 
   private async ensureListFolder(
     list: GranolaDocumentList,
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): Promise<void> {
     const folderName = sanitizeFileName(list.title);
     await this.ensureFolder(
@@ -1848,7 +2047,7 @@ export class SyncEngine {
 
   private async ensureCustomerNotes(
     customers: string[],
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): Promise<void> {
     for (const customer of customers) {
       const fileName = sanitizeFileName(customer);
@@ -1867,7 +2066,7 @@ export class SyncEngine {
 
   private buildMeetingFilePath(
     doc: GranolaDocument,
-    settings: GranolaAdoraSettings,
+    settings: AdoraCortexSettings,
   ): string {
     const datePrefix = new Date(doc.created_at).toISOString().split("T")[0];
     const title = sanitizeFileName(doc.title ?? "Untitled Meeting");
@@ -1922,8 +2121,8 @@ export function formatSyncResult(result: SyncResult): string {
   if (result.slackMessages > 0)
     parts.push(`${result.slackMessages} Slack messages`);
   if (result.githubPRs > 0) parts.push(`${result.githubPRs} GitHub PRs`);
-  if (result.googleDriveDocs > 0)
-    parts.push(`${result.googleDriveDocs} Google Drive docs`);
+  if (result.googleDriveItems > 0)
+    parts.push(`${result.googleDriveItems} Google Drive items`);
   if (result.hubspotContacts > 0)
     parts.push(`${result.hubspotContacts} HubSpot contacts`);
   if (result.hubspotCompanies > 0)
@@ -1937,8 +2136,8 @@ export function formatSyncResult(result: SyncResult): string {
 
   const summary =
     parts.length > 0
-      ? `Granola sync: ${parts.join(", ")}`
-      : "Granola sync: no new notes";
+      ? `Cortex sync: ${parts.join(", ")}`
+      : "Cortex sync: no new notes";
   return result.errors.length > 0
     ? `${summary} (${result.errors.length} errors)`
     : summary;

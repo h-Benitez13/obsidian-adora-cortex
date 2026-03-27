@@ -1,4 +1,4 @@
-# Obsidian Granola Adora
+# Adora Cortex
 
 Obsidian plugin that syncs company context into a local vault and turns it into a shared knowledge system for meetings, customers, product asks, and engineering activity.
 
@@ -9,7 +9,7 @@ Obsidian plugin that syncs company context into a local vault and turns it into 
 - Figma files
 - Slack highlights
 - GitHub pull requests
-- Google Docs (from a configured Drive folder)
+- Google Drive folders, files, and shared-drive roots (recursively from one configured ID)
 
 ## AI workflows
 
@@ -137,7 +137,7 @@ What it does:
 Use a disposable vault or a copy of your team vault when running these checks. For the most reliable pass:
 
 1. Enable the plugin.
-2. Open **Settings → Granola Adora** and fill in only the integrations you want to test.
+2. Open **Settings → Adora Cortex** and fill in only the integrations you want to test.
 3. Open the **Command palette** with `Cmd/Ctrl+P`.
 4. Run the command listed below.
 5. Confirm the notice text, created note, or outbound side effect matches the expected result.
@@ -148,7 +148,7 @@ For the expanded checklist, edge cases, and settings validation, see [`TESTING.m
 
 | Test | How to run it | Expected output |
 | --- | --- | --- |
-| Sync ribbon | Click the `Sync Granola` ribbon icon | Notice starts with `Granola: Starting sync...`, then a completion notice with created/updated counts. |
+| Sync ribbon | Click the `Sync Cortex` ribbon icon | Notice starts with `Cortex: Starting sync...`, then a completion notice with created/updated counts. |
 | Ask Adora ribbon | Click the `Ask Adora` ribbon icon | The Ask Adora side panel opens on the right. |
 
 ### Ask Adora commands
@@ -165,7 +165,7 @@ For the expanded checklist, edge cases, and settings validation, see [`TESTING.m
 
 | Test | How to run it | Expected output |
 | --- | --- | --- |
-| Sync meetings from Granola | Run `Sync meetings from Granola` | Meeting notes are created or updated under `Adora/Meetings/`. |
+| Sync meetings | Run `Sync meetings` | Meeting notes are created or updated under `Adora/Meetings/`. |
 | Full re-sync | Run `Full re-sync (reset and re-import all)` | Sync state resets, then all eligible content is re-imported without duplicate note trees. |
 | Create idea from meeting | Open a meeting note, run `Create idea from meeting`, complete the modal | An idea note is created under `Adora/Ideas/` and opened. |
 | Prepare customer brief | Run `Prepare customer brief (AI)`, enter a customer name in the modal | A prep brief note is created under `Adora/Customers/` and opened. |
@@ -211,6 +211,7 @@ For the expanded checklist, edge cases, and settings validation, see [`TESTING.m
 ## Docs
 
 - MCP setup and central-brain workflow: `docs/mcp-setup.md`
+- Perplexity home MCP setup: `docs/perplexity-obsidian-home-setup.md`
 - Full manual QA checklist: `TESTING.md`
 - Team vault starter template: `templates/vault-template/`
 - Shared config template: `templates/team-config.template.json`

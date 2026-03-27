@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { GranolaAdoraSettings, HealthScore } from "./types";
+import { AdoraCortexSettings, HealthScore } from "./types";
 import { CanonicalIncidentRecord } from "./learning-schema";
 import {
   buildIncidentNotionProperties,
@@ -23,12 +23,12 @@ function emptyResult(): NotifyResult {
 
 export class SlackNotifier {
   private token: string;
-  private getSettings: () => GranolaAdoraSettings;
+  private getSettings: () => AdoraCortexSettings;
   private saveSettings: () => Promise<void>;
 
   constructor(
     token: string,
-    getSettings: () => GranolaAdoraSettings,
+    getSettings: () => AdoraCortexSettings,
     saveSettings: () => Promise<void>,
   ) {
     this.token = token;
@@ -163,12 +163,12 @@ interface NotionBlock {
 
 export class NotionPublisher {
   private token: string;
-  private getSettings: () => GranolaAdoraSettings;
+  private getSettings: () => AdoraCortexSettings;
   private saveSettings: () => Promise<void>;
 
   constructor(
     token: string,
-    getSettings: () => GranolaAdoraSettings,
+    getSettings: () => AdoraCortexSettings,
     saveSettings: () => Promise<void>,
   ) {
     this.token = token;
@@ -441,11 +441,11 @@ export class NotionPublisher {
 export class OutboundNotifier {
   private slack: SlackNotifier | null = null;
   private notion: NotionPublisher | null = null;
-  private getSettings: () => GranolaAdoraSettings;
+  private getSettings: () => AdoraCortexSettings;
   private saveSettings: () => Promise<void>;
 
   constructor(
-    getSettings: () => GranolaAdoraSettings,
+    getSettings: () => AdoraCortexSettings,
     saveSettings: () => Promise<void>,
   ) {
     this.getSettings = getSettings;
