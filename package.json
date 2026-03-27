@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "build:cli": "node cli/esbuild.cli.mjs",
+    "sync": "node cortex-sync.js",
     "deploy": "npm run build && PLUGIN_DIR=\"${OBSIDIAN_PLUGIN_DIR:-$HOME/Desktop/Adora AI/.obsidian/plugins/adora-cortex}\" && cp main.js manifest.json styles.css \"$PLUGIN_DIR\"",
     "perplexity:import": "node scripts/perplexity-import.mjs",
     "perplexity:pull": "node scripts/perplexity-daily-export.mjs",

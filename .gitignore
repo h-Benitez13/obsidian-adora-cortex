@@ -1,9 +1,11 @@
 # Build output
 main.js
+cortex-sync.js
 *.js.map
 
 # Node
 node_modules/
+.perplexity-export/
 
 # Obsidian
 data.json
