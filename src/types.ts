@@ -437,70 +437,74 @@ export interface AdoraCortexSettings {
   notifiedItems: Record<string, string>;
 }
 
-export interface TeamConfigTemplate {
-  syncIntervalMinutes: number;
-  syncOnStartup: boolean;
-  baseFolderPath: string;
-  meetingsFolderName: string;
-  ideasFolderName: string;
-  customersFolderName: string;
-  peopleFolderName: string;
-  prioritiesFolderName: string;
-  includeTranscript: boolean;
-  autoTagEnabled: boolean;
-  knownCustomers: string[];
-  knownTopics: string[];
-  syncSharedDocs: boolean;
-  syncWorkspaceLists: boolean;
-  syncLinear: boolean;
-  autoCreateLinearFromCustomerAsks: boolean;
-  autoCreateLinearFromCustomerAsksDryRun: boolean;
-  linearFolderName: string;
-  syncFigma: boolean;
-  figmaTeamId: string;
-  designsFolderName: string;
-  aiEnabled: boolean;
-  aiModel: string;
-  aiModelFast: string;
-  aiModelDeep: string;
-  digestsFolderName: string;
-  syncSlack: boolean;
-  slackFolderName: string;
-  syncGithub: boolean;
-  githubOrg: string;
-  githubRepoAllowlist: string[];
-  githubFolderName: string;
-  syncGoogleDrive: boolean;
-  googleDriveFolderId: string;
-  googleDriveFolderName: string;
-  syncHubspot: boolean;
-  hubspotFolderName: string;
-  healthScoreEnabled: boolean;
-  healthWeightCustomerSatisfaction: number;
-  healthWeightPerformanceGoals: number;
-  healthWeightProductEngagement: number;
-  healthCustomerSatisfactionSentimentWeight: number;
-  healthCustomerSatisfactionIssuesWeight: number;
-  healthPerformanceGoalsIssuesWeight: number;
-  healthPerformanceGoalsCrmWeight: number;
-  healthProductEngagementMeetingWeight: number;
-  healthProductEngagementSentimentWeight: number;
-  healthTierHealthyMin: number;
-  healthTierAtRiskMin: number;
-  decisionsFolderName: string;
-  releaseNotesFolderName: string;
-  outboundEnabled: boolean;
-  isDesignatedBrain: boolean;
-  notifySlackEnabled: boolean;
-  slackDigestChannelId: string;
-  slackHealthAlertChannelId: string;
-  notifyNotionEnabled: boolean;
-  healthAlertThreshold: number;
-  notionDigestParentId: string;
-  notionCustomerAsksDbId: string;
-  notionIncidentsDbId: string;
-  sourceSyncBudgets: Record<string, SourceSyncBudget>;
-}
+export const TEAM_CONFIG_FIELDS = [
+  "syncIntervalMinutes",
+  "syncOnStartup",
+  "baseFolderPath",
+  "meetingsFolderName",
+  "ideasFolderName",
+  "customersFolderName",
+  "peopleFolderName",
+  "prioritiesFolderName",
+  "includeTranscript",
+  "autoTagEnabled",
+  "knownCustomers",
+  "knownTopics",
+  "syncSharedDocs",
+  "syncWorkspaceLists",
+  "syncLinear",
+  "autoCreateLinearFromCustomerAsks",
+  "autoCreateLinearFromCustomerAsksDryRun",
+  "linearFolderName",
+  "syncFigma",
+  "figmaTeamId",
+  "designsFolderName",
+  "aiEnabled",
+  "aiModel",
+  "aiModelFast",
+  "aiModelDeep",
+  "digestsFolderName",
+  "syncSlack",
+  "slackFolderName",
+  "syncGithub",
+  "githubOrg",
+  "githubRepoAllowlist",
+  "githubFolderName",
+  "syncGoogleDrive",
+  "googleDriveFolderId",
+  "googleDriveFolderName",
+  "syncHubspot",
+  "hubspotFolderName",
+  "healthScoreEnabled",
+  "healthWeightCustomerSatisfaction",
+  "healthWeightPerformanceGoals",
+  "healthWeightProductEngagement",
+  "healthCustomerSatisfactionSentimentWeight",
+  "healthCustomerSatisfactionIssuesWeight",
+  "healthPerformanceGoalsIssuesWeight",
+  "healthPerformanceGoalsCrmWeight",
+  "healthProductEngagementMeetingWeight",
+  "healthProductEngagementSentimentWeight",
+  "healthTierHealthyMin",
+  "healthTierAtRiskMin",
+  "decisionsFolderName",
+  "releaseNotesFolderName",
+  "outboundEnabled",
+  "isDesignatedBrain",
+  "notifySlackEnabled",
+  "slackDigestChannelId",
+  "slackHealthAlertChannelId",
+  "notifyNotionEnabled",
+  "healthAlertThreshold",
+  "notionDigestParentId",
+  "notionCustomerAsksDbId",
+  "notionIncidentsDbId",
+  "sourceSyncBudgets",
+] as const satisfies readonly (keyof AdoraCortexSettings)[];
+
+export type TeamConfigField = (typeof TEAM_CONFIG_FIELDS)[number];
+
+export type TeamConfigTemplate = Pick<AdoraCortexSettings, TeamConfigField>;
 
 export const DEFAULT_SETTINGS: AdoraCortexSettings = {
   syncIntervalMinutes: 30,

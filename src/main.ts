@@ -12,6 +12,8 @@ import {
   AdoraCortexSettings,
   DEFAULT_SETTINGS,
   Decision,
+  TEAM_CONFIG_FIELDS,
+  TeamConfigField,
   TeamConfigTemplate,
   AskAdoraMessage,
 } from "./types";
@@ -362,81 +364,114 @@ export default class AdoraCortexPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  private cloneTeamConfigValue<K extends TeamConfigField>(
+    key: K,
+    value: TeamConfigTemplate[K],
+  ): TeamConfigTemplate[K] {
+    if (
+      key === "knownCustomers" ||
+      key === "knownTopics" ||
+      key === "githubRepoAllowlist"
+    ) {
+      return [...(value as string[])] as TeamConfigTemplate[K];
+    }
+    if (key === "sourceSyncBudgets") {
+      return structuredClone(value) as TeamConfigTemplate[K];
+    }
+    return value;
+  }
+
+  private isValidSourceSyncBudgets(
+    value: unknown,
+  ): value is TeamConfigTemplate["sourceSyncBudgets"] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return false;
+    }
+
+    return Object.values(value).every((budget) => {
+      if (!budget || typeof budget !== "object" || Array.isArray(budget)) {
+        return false;
+      }
+
+      const candidate = budget as Record<string, unknown>;
+      return (
+        typeof candidate.maxContainersPerRun === "number" &&
+        Number.isFinite(candidate.maxContainersPerRun) &&
+        typeof candidate.maxItemsPerContainer === "number" &&
+        Number.isFinite(candidate.maxItemsPerContainer) &&
+        typeof candidate.maxItemsPerRun === "number" &&
+        Number.isFinite(candidate.maxItemsPerRun)
+      );
+    });
+  }
+
+  private isValidTeamConfigValue<K extends TeamConfigField>(
+    key: K,
+    value: unknown,
+  ): value is TeamConfigTemplate[K] {
+    switch (key) {
+      case "knownCustomers":
+      case "knownTopics":
+      case "githubRepoAllowlist":
+        return (
+          Array.isArray(value) &&
+          value.every((item) => typeof item === "string")
+        );
+      case "sourceSyncBudgets":
+        return this.isValidSourceSyncBudgets(value);
+      default: {
+        const defaultValue = DEFAULT_SETTINGS[key];
+        if (typeof defaultValue === "string") {
+          return typeof value === "string";
+        }
+        if (typeof defaultValue === "number") {
+          return typeof value === "number" && Number.isFinite(value);
+        }
+        if (typeof defaultValue === "boolean") {
+          return typeof value === "boolean";
+        }
+        return false;
+      }
+    }
+  }
+
+  private buildTeamConfigTemplate(): TeamConfigTemplate {
+    return Object.fromEntries(
+      TEAM_CONFIG_FIELDS.map((key) => [
+        key,
+        this.cloneTeamConfigValue(key, this.settings[key]),
+      ]),
+    ) as TeamConfigTemplate;
+  }
+
+  private parseTeamConfigTemplate(raw: string): Partial<TeamConfigTemplate> {
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Team config must be a JSON object.");
+    }
+
+    const candidate = parsed as Record<string, unknown>;
+    const config: Partial<TeamConfigTemplate> = {};
+
+    for (const key of TEAM_CONFIG_FIELDS) {
+      const value = candidate[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (!this.isValidTeamConfigValue(key, value)) {
+        throw new Error(`Invalid value for team config field: ${key}`);
+      }
+      Object.assign(config, {
+        [key]: this.cloneTeamConfigValue(key, value),
+      });
+    }
+
+    return config;
+  }
+
   async exportTeamConfigTemplate(): Promise<void> {
-    const template: TeamConfigTemplate = {
-      syncIntervalMinutes: this.settings.syncIntervalMinutes,
-      syncOnStartup: this.settings.syncOnStartup,
-      baseFolderPath: this.settings.baseFolderPath,
-      meetingsFolderName: this.settings.meetingsFolderName,
-      ideasFolderName: this.settings.ideasFolderName,
-      customersFolderName: this.settings.customersFolderName,
-      peopleFolderName: this.settings.peopleFolderName,
-      prioritiesFolderName: this.settings.prioritiesFolderName,
-      includeTranscript: this.settings.includeTranscript,
-      autoTagEnabled: this.settings.autoTagEnabled,
-      knownCustomers: [...this.settings.knownCustomers],
-      knownTopics: [...this.settings.knownTopics],
-      syncSharedDocs: this.settings.syncSharedDocs,
-      syncWorkspaceLists: this.settings.syncWorkspaceLists,
-      syncLinear: this.settings.syncLinear,
-      autoCreateLinearFromCustomerAsks:
-        this.settings.autoCreateLinearFromCustomerAsks,
-      autoCreateLinearFromCustomerAsksDryRun:
-        this.settings.autoCreateLinearFromCustomerAsksDryRun,
-      linearFolderName: this.settings.linearFolderName,
-      syncFigma: this.settings.syncFigma,
-      figmaTeamId: this.settings.figmaTeamId,
-      designsFolderName: this.settings.designsFolderName,
-      aiEnabled: this.settings.aiEnabled,
-      aiModel: this.settings.aiModel,
-      aiModelFast: this.settings.aiModelFast,
-      aiModelDeep: this.settings.aiModelDeep,
-      digestsFolderName: this.settings.digestsFolderName,
-      syncSlack: this.settings.syncSlack,
-      slackFolderName: this.settings.slackFolderName,
-      syncGithub: this.settings.syncGithub,
-      githubOrg: this.settings.githubOrg,
-      githubRepoAllowlist: [...this.settings.githubRepoAllowlist],
-      githubFolderName: this.settings.githubFolderName,
-      syncGoogleDrive: this.settings.syncGoogleDrive,
-      googleDriveFolderId: this.settings.googleDriveFolderId,
-      googleDriveFolderName: this.settings.googleDriveFolderName,
-      syncHubspot: this.settings.syncHubspot,
-      hubspotFolderName: this.settings.hubspotFolderName,
-      healthScoreEnabled: this.settings.healthScoreEnabled,
-      healthWeightCustomerSatisfaction:
-        this.settings.healthWeightCustomerSatisfaction,
-      healthWeightPerformanceGoals: this.settings.healthWeightPerformanceGoals,
-      healthWeightProductEngagement:
-        this.settings.healthWeightProductEngagement,
-      healthCustomerSatisfactionSentimentWeight:
-        this.settings.healthCustomerSatisfactionSentimentWeight,
-      healthCustomerSatisfactionIssuesWeight:
-        this.settings.healthCustomerSatisfactionIssuesWeight,
-      healthPerformanceGoalsIssuesWeight:
-        this.settings.healthPerformanceGoalsIssuesWeight,
-      healthPerformanceGoalsCrmWeight:
-        this.settings.healthPerformanceGoalsCrmWeight,
-      healthProductEngagementMeetingWeight:
-        this.settings.healthProductEngagementMeetingWeight,
-      healthProductEngagementSentimentWeight:
-        this.settings.healthProductEngagementSentimentWeight,
-      healthTierHealthyMin: this.settings.healthTierHealthyMin,
-      healthTierAtRiskMin: this.settings.healthTierAtRiskMin,
-      decisionsFolderName: this.settings.decisionsFolderName,
-      releaseNotesFolderName: this.settings.releaseNotesFolderName,
-      outboundEnabled: this.settings.outboundEnabled,
-      isDesignatedBrain: this.settings.isDesignatedBrain,
-      notifySlackEnabled: this.settings.notifySlackEnabled,
-      slackDigestChannelId: this.settings.slackDigestChannelId,
-      slackHealthAlertChannelId: this.settings.slackHealthAlertChannelId,
-      notifyNotionEnabled: this.settings.notifyNotionEnabled,
-      healthAlertThreshold: this.settings.healthAlertThreshold,
-      notionDigestParentId: this.settings.notionDigestParentId,
-      notionCustomerAsksDbId: this.settings.notionCustomerAsksDbId,
-      notionIncidentsDbId: this.settings.notionIncidentsDbId,
-      sourceSyncBudgets: structuredClone(this.settings.sourceSyncBudgets),
-    };
+    const template = this.buildTeamConfigTemplate();
 
     const exportPath = normalizePath(
       `${this.settings.baseFolderPath}/_setup/team-config.template.json`,
@@ -576,76 +611,9 @@ export default class AdoraCortexPlugin extends Plugin {
 
   private async importTeamConfigFromFile(file: TFile): Promise<void> {
     const raw = await this.app.vault.read(file);
-    const parsed = JSON.parse(raw) as Partial<TeamConfigTemplate>;
-    const apply = <K extends keyof TeamConfigTemplate>(key: K): void => {
-      if (parsed[key] !== undefined) {
-        (this.settings[key as keyof AdoraCortexSettings] as unknown) =
-          parsed[key];
-      }
-    };
+    const parsed = this.parseTeamConfigTemplate(raw);
 
-    apply("syncIntervalMinutes");
-    apply("syncOnStartup");
-    apply("baseFolderPath");
-    apply("meetingsFolderName");
-    apply("ideasFolderName");
-    apply("customersFolderName");
-    apply("peopleFolderName");
-    apply("prioritiesFolderName");
-    apply("includeTranscript");
-    apply("autoTagEnabled");
-    apply("knownCustomers");
-    apply("knownTopics");
-    apply("syncSharedDocs");
-    apply("syncWorkspaceLists");
-    apply("syncLinear");
-    apply("autoCreateLinearFromCustomerAsks");
-    apply("autoCreateLinearFromCustomerAsksDryRun");
-    apply("linearFolderName");
-    apply("syncFigma");
-    apply("figmaTeamId");
-    apply("designsFolderName");
-    apply("aiEnabled");
-    apply("aiModel");
-    apply("aiModelFast");
-    apply("aiModelDeep");
-    apply("digestsFolderName");
-    apply("syncSlack");
-    apply("slackFolderName");
-    apply("syncGithub");
-    apply("githubOrg");
-    apply("githubRepoAllowlist");
-    apply("githubFolderName");
-    apply("syncGoogleDrive");
-    apply("googleDriveFolderId");
-    apply("googleDriveFolderName");
-    apply("syncHubspot");
-    apply("hubspotFolderName");
-    apply("healthScoreEnabled");
-    apply("healthWeightCustomerSatisfaction");
-    apply("healthWeightPerformanceGoals");
-    apply("healthWeightProductEngagement");
-    apply("healthCustomerSatisfactionSentimentWeight");
-    apply("healthCustomerSatisfactionIssuesWeight");
-    apply("healthPerformanceGoalsIssuesWeight");
-    apply("healthPerformanceGoalsCrmWeight");
-    apply("healthProductEngagementMeetingWeight");
-    apply("healthProductEngagementSentimentWeight");
-    apply("healthTierHealthyMin");
-    apply("healthTierAtRiskMin");
-    apply("decisionsFolderName");
-    apply("releaseNotesFolderName");
-    apply("outboundEnabled");
-    apply("isDesignatedBrain");
-    apply("notifySlackEnabled");
-    apply("slackDigestChannelId");
-    apply("slackHealthAlertChannelId");
-    apply("notifyNotionEnabled");
-    apply("healthAlertThreshold");
-    apply("notionDigestParentId");
-    apply("notionCustomerAsksDbId");
-    apply("notionIncidentsDbId");
-    apply("sourceSyncBudgets");
+    Object.assign(this.settings, parsed);
 
     this.updateTaggerConfig();
     this.restartAutoSync();

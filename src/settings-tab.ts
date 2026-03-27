@@ -1158,19 +1158,15 @@ export class AdoraCortexSettingTab extends PluginSettingTab {
           }),
       );
 
-    const notionSettings = this.plugin.settings as typeof this.plugin.settings & {
-      notionIncidentsDbId: string;
-    };
-
     new Setting(containerEl)
       .setName("Notion incidents database ID")
       .setDesc("Database ID where structured incident records are added as pages.")
       .addText((text) =>
         text
           .setPlaceholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-          .setValue(notionSettings.notionIncidentsDbId)
+          .setValue(this.plugin.settings.notionIncidentsDbId)
           .onChange(async (value) => {
-            notionSettings.notionIncidentsDbId = value.trim();
+            this.plugin.settings.notionIncidentsDbId = value.trim();
             await this.plugin.savePluginSettings();
           }),
       );
