@@ -65,7 +65,6 @@ export class LinearClient {
       issues(
         filter: {
           assignee: { isMe: { eq: true } }
-          state: { type: { nin: ["completed", "cancelled"] } }
         }
         first: $first
         after: $after
@@ -81,9 +80,7 @@ export class LinearClient {
   async fetchTeamIssues(): Promise<LinearIssue[]> {
     const query = `query TeamIssues($first: Int!, $after: String) {
       issues(
-        filter: {
-          state: { type: { nin: ["completed", "cancelled"] } }
-        }
+        filter: { }
         first: $first
         after: $after
         orderBy: updatedAt
@@ -98,9 +95,7 @@ export class LinearClient {
   async fetchProjects(): Promise<LinearProject[]> {
     const query = `query Projects($first: Int!, $after: String) {
       projects(
-        filter: {
-          state: { type: { in: ["backlog", "planned", "started", "paused"] } }
-        }
+        filter: { }
         first: $first
         after: $after
         orderBy: updatedAt
@@ -157,10 +152,9 @@ export class LinearClient {
   }
 
   async fetchCompletedIssues(since?: string): Promise<LinearIssue[]> {
-    let filterBlock = `state: { type: { eq: "completed" } }`;
-    if (since) {
-      filterBlock += `, completedAt: { gte: "${since}" }`;
-    }
+    // Note: We don't filter by state.type in GraphQL as Linear's API doesn't support it.
+    // Instead we filter by completedAt date; state filtering can be done client-side if needed.
+    const filterBlock = since ? `completedAt: { gte: "${since}" }` : "";
 
     const query = `query CompletedIssues($first: Int!, $after: String) {
       issues(
