@@ -105,6 +105,43 @@ function saveConfig(configPath: string, settings: AdoraCortexSettings): void {
   fs.writeFileSync(configPath, JSON.stringify(existing, null, 2) + "\n", "utf-8");
 }
 
+// ── Granola env-based auth ──
+
+async function authenticateGranolaViaEnv(api: GranolaApiClient): Promise<boolean> {
+  const directToken = process.env.CORTEX_GRANOLA_TOKEN;
+  if (directToken) {
+    (api as any).token = directToken;
+    return true;
+  }
+
+  const refreshToken = process.env.CORTEX_GRANOLA_REFRESH_TOKEN;
+  if (refreshToken) {
+    try {
+      const resp = await fetch("https://auth.granola.ai/user_management/authenticate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: "client_01JZJ0XBDAT8PHJWQY09Y0VD61",
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+        }),
+      });
+      if (!resp.ok) {
+        console.error(`Granola token refresh failed: ${resp.status} ${resp.statusText}`);
+        return false;
+      }
+      const data = (await resp.json()) as { access_token: string };
+      (api as any).token = data.access_token;
+      return true;
+    } catch (err) {
+      console.error(`Granola token refresh error: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  return false;
+}
+
 // ── Main ──
 
 async function main(): Promise<void> {
@@ -128,11 +165,15 @@ async function main(): Promise<void> {
     saveConfig(configPath, settings);
   };
 
-  // Authenticate with Granola (reads local token from Granola desktop app)
-  const authenticated = await api.ensureAuthenticated();
+  // Authenticate with Granola (env token → local desktop app fallback)
+  let authenticated = await authenticateGranolaViaEnv(api);
   if (!authenticated) {
-    console.warn("Warning: Granola auth failed. Meeting sync will be skipped.");
-    console.warn("Make sure the Granola desktop app is installed and signed in.");
+    authenticated = await api.ensureAuthenticated();
+    if (!authenticated) {
+      console.warn("Warning: Granola auth failed. Meeting sync will be skipped.");
+      console.warn("Make sure the Granola desktop app is installed and signed in,");
+      console.warn("or set CORTEX_GRANOLA_TOKEN / CORTEX_GRANOLA_REFRESH_TOKEN.");
+    }
   }
 
   const engine = new SyncEngine(vault, api, tagger, getSettings, saveSettings);
